@@ -96,3 +96,21 @@ def test_normalize_peak_scales_to_minus6db():
     out = _normalize_peak(audio, target_dbfs=-6.0)
     assert np.max(np.abs(out)) == pytest.approx(10 ** (-6 / 20), rel=0.02)
     assert out.max() <= 1.0
+
+
+def test_vad_without_model_returns_false_before_max_duration():
+    from audio.vad import SileroVAD
+    vad = SileroVAD()
+    vad._model = None
+    vad.reset(max_record_ms=10000, no_speech_grace_ms=10000)
+    assert vad.process_frame(np.zeros(512, dtype=np.int16)) is False
+
+
+def test_vad_without_model_ends_at_max_duration():
+    import time as _time
+    from audio.vad import SileroVAD
+    vad = SileroVAD()
+    vad._model = None
+    vad.reset(max_record_ms=1000, no_speech_grace_ms=1000)
+    vad._start_time = _time.perf_counter() - 2.0
+    assert vad.process_frame(np.zeros(512, dtype=np.int16)) is True

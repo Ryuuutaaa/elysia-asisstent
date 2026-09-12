@@ -100,7 +100,8 @@ class ElysiaAssistant:
     def _process_pipeline(self, audio: np.ndarray):
         start_e2e = time.perf_counter()
         try:
-            save_debug_audio(self._session_id, audio)
+            suffix = "-confirm" if self._pending_confirmation else ""
+            save_debug_audio(self._session_id, audio, suffix=suffix)
             text = self._stt.transcribe(audio) if len(audio) > 0 else ""
 
             if self._pending_confirmation:
@@ -140,6 +141,9 @@ class ElysiaAssistant:
         except Exception as e:
             log.error("pipeline_error", error=str(e))
             self._respond_error("Terjadi kesalahan teknis.")
+            if self._fsm.current_state != AssistantState.IDLE:
+                self._fsm.reset_to_idle("pipeline_error")
+                self._wake_word.resume()
 
     def _handle_confirmation_response(self, text: str):
         pending = self._pending_confirmation
@@ -206,7 +210,17 @@ class ElysiaAssistant:
 
     def run(self):
         self._running = True
-        self._recorder.start_stream()
+        try:
+            self._recorder.start_stream()
+        except Exception as e:
+            log.critical("audio_stream_start_failed", error_code="ERR_AUDIO_INPUT", error=str(e))
+            print(
+                "[Elysia] Gagal membuka perangkat audio. Periksa mikrofon dan AUDIO_INPUT_SOURCE di .env.",
+                file=sys.stderr,
+            )
+            self.shutdown()
+            sys.exit(1)
+
         log.info("elysia_running", message="Elysia mendengarkan wake word...")
 
         while self._running:

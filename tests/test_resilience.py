@@ -42,3 +42,12 @@ def test_no_shell_true_in_source():
         assert path.exists(), f"expected source file is missing: {fname}"
         content = path.read_text()
         assert "shell=True" not in content, f"Found shell=True in {fname}"
+
+
+def test_is_retryable_skips_4xx_but_allows_429_and_5xx():
+    from agent.llm import _is_retryable
+    from google.genai import errors
+    assert _is_retryable(errors.ClientError(400, {"error": {"message": "bad"}})) is False
+    assert _is_retryable(errors.ClientError(429, {"error": {"message": "rate"}})) is True
+    assert _is_retryable(errors.ServerError(503, {"error": {"message": "busy"}})) is True
+    assert _is_retryable(TimeoutError("t")) is True

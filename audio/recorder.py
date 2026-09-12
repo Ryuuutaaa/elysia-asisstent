@@ -119,7 +119,7 @@ def find_device_index(source_type: str) -> Optional[int]:
     return None
 
 
-def save_debug_audio(session_id: str, audio: np.ndarray, max_files: int = 50) -> Optional[str]:
+def save_debug_audio(session_id: str, audio: np.ndarray, suffix: str = "", max_files: int = 50) -> Optional[str]:
     """Persist raw audio buffer for VAD/STT debugging (opt-in via DEBUG_RECORD_AUDIO).
     Keeps at most `max_files` newest WAV files in .debug_audio/."""
     if not settings.DEBUG_RECORD_AUDIO:
@@ -127,7 +127,7 @@ def save_debug_audio(session_id: str, audio: np.ndarray, max_files: int = 50) ->
 
     debug_dir = Path(".debug_audio")
     debug_dir.mkdir(parents=True, exist_ok=True)
-    path = debug_dir / f"req-{session_id}.wav"
+    path = debug_dir / f"req-{session_id}{suffix}.wav"
     try:
         import wave
 

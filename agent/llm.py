@@ -2,10 +2,11 @@ import time
 from typing import Optional
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 from tenacity import (
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -79,10 +80,18 @@ def _request(user_text: str, system_prompt: str) -> types.GenerateContentRespons
     return response
 
 
+def _is_retryable(exc: BaseException) -> bool:
+    """Retry transient failures (5xx, timeouts, network). Skip 4xx client errors
+    such as 400 INVALID_ARGUMENT, except 429 rate limiting which is retryable."""
+    if isinstance(exc, genai_errors.ClientError):
+        return getattr(exc, "code", None) == 429
+    return True
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=3),
-    retry=retry_if_exception_type((ConnectionError, TimeoutError, Exception)),
+    retry=retry_if_exception(_is_retryable),
     reraise=True,
 )
 def chat(user_text: str, system_prompt: str) -> types.GenerateContentResponse:

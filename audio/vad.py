@@ -53,7 +53,7 @@ class SileroVAD:
 
     def process_frame(self, frame: np.ndarray) -> bool:
         """Returns True if endpoint reached (silence detected or max duration)."""
-        if not self._is_active or self._model is None:
+        if not self._is_active:
             return False
 
         now = time.perf_counter()
@@ -62,6 +62,11 @@ class SileroVAD:
         if elapsed_ms > self._max_record_ms:
             log.info("vad_max_duration_reached", max_ms=self._max_record_ms)
             return True
+
+        if self._model is None:
+            # VAD model unavailable: cannot endpoint on silence, but the max-duration
+            # guard above still terminates the recording instead of hanging forever.
+            return False
 
         tensor = torch.from_numpy(frame.astype(np.float32) / 32768.0).unsqueeze(0)
         try:

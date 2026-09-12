@@ -35,3 +35,14 @@ def test_rotation_keeps_newest_50(tmp_path, monkeypatch):
     remaining = sorted(p.name for p in debug_dir.glob("req-*.wav"))
     assert len(remaining) == 50
     assert "req-newest.wav" in remaining
+
+
+def test_suffix_avoids_overwrite(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(settings, "DEBUG_RECORD_AUDIO", True)
+    audio = np.zeros(16, dtype=np.int16)
+    save_debug_audio("s1", audio)
+    save_debug_audio("s1", audio, suffix="-confirm")
+    debug_dir = tmp_path / ".debug_audio"
+    assert (debug_dir / "req-s1.wav").exists()
+    assert (debug_dir / "req-s1-confirm.wav").exists()
