@@ -1,0 +1,12 @@
+.codegraph
+.commandcode
+.debug_audio
+.omo
+.pytest_cache
+.env
+flow.md
+note.md
+PRD.md
+.venv/
+__pycache__/
+*.pyc
