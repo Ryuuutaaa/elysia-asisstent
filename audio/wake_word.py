@@ -1,6 +1,7 @@
 import os
 import time
 import numpy as np
+from pathlib import Path
 from typing import Optional, Callable
 from core.config import settings
 from core.logger import get_logger
@@ -28,10 +29,25 @@ class PorcupineWakeWord:
 
         if self._engine == "openwakeword":
             try:
+                import openwakeword
                 from openwakeword.model import Model
-                self._openwakeword_model = Model()
-                log.info("openwakeword_loaded", model=settings.OPENWAKEWORD_MODEL)
-                return
+
+                requested = settings.OPENWAKEWORD_MODEL
+                all_paths = openwakeword.get_pretrained_model_paths()
+                paths = [p for p in all_paths if requested in p]
+                if not paths:
+                    log.warning(
+                        "openwakeword_model_not_found",
+                        requested=requested,
+                        available=[Path(p).stem for p in all_paths],
+                    )
+                    self._engine = "porcupine"
+                else:
+                    # Load only the configured model: loading all bundled models
+                    # (alexa, hey_mycroft, ...) would wake on unrelated phrases.
+                    self._openwakeword_model = Model(wakeword_model_paths=paths)
+                    log.info("openwakeword_loaded", model=requested, paths=paths)
+                    return
             except Exception as e:
                 log.warning("openwakeword_load_failed", error=str(e), note="falling back to porcupine if key available")
                 self._engine = "porcupine"

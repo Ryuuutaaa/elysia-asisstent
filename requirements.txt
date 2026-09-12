@@ -10,6 +10,10 @@ numpy>=2.0,<3.0
 
 # --- Wake Word ---
 pvporcupine>=4.0,<5.0
+# openwakeword is the default engine (offline, no key). Pulls onnxruntime,
+# scikit-learn, scipy and tqdm automatically. Pinned to 0.4.x for the
+# wakeword_model_paths API used by audio/wake_word.py.
+openwakeword>=0.4,<0.5
 
 # --- VAD / Endpointing ---
 # Silero VAD membutuhkan torch (CPU-only cukup)
