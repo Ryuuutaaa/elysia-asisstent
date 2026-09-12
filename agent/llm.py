@@ -1,4 +1,3 @@
-import threading
 import time
 from typing import Optional
 
@@ -13,6 +12,7 @@ from tenacity import (
 
 from core.config import settings
 from core.logger import get_logger
+from core.utils import run_with_timeout
 
 log = get_logger("llm")
 
@@ -25,27 +25,6 @@ def get_client() -> genai.Client:
         _client = genai.Client(api_key=settings.GOOGLE_API_KEY)
         log.info("gemini_client_initialized", model=settings.GEMINI_MODEL)
     return _client
-
-
-def _run_with_timeout(fn, timeout_sec: float):
-    """Enforce the request budget application-side: the Gemini API rejects transport
-    deadlines below 10s, so a shorter per-request timeout cannot be set on the client."""
-    result: dict = {}
-
-    def target():
-        try:
-            result["value"] = fn()
-        except Exception as e:
-            result["error"] = e
-
-    thread = threading.Thread(target=target, daemon=True)
-    thread.start()
-    thread.join(timeout_sec)
-    if thread.is_alive():
-        raise TimeoutError(f"Gemini request exceeded {timeout_sec:.1f}s budget")
-    if "error" in result:
-        raise result["error"]
-    return result["value"]
 
 
 OPEN_APP_TOOL = types.FunctionDeclaration(
@@ -108,7 +87,7 @@ def _request(user_text: str, system_prompt: str) -> types.GenerateContentRespons
 )
 def chat(user_text: str, system_prompt: str) -> types.GenerateContentResponse:
     timeout_sec = settings.LLM_REQUEST_TIMEOUT_MS / 1000
-    return _run_with_timeout(lambda: _request(user_text, system_prompt), timeout_sec)
+    return run_with_timeout(lambda: _request(user_text, system_prompt), timeout_sec)
 
 
 def extract_function_call(

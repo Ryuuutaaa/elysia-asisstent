@@ -1,6 +1,9 @@
+import pathlib
 import pytest
 import numpy as np
 from unittest.mock import MagicMock, patch
+
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 def test_tts_edge_failure_returns_none():
     import audio.tts as tts_mod
@@ -27,7 +30,6 @@ def test_speak_falls_through_to_console():
             tts_mod.speak("test fallback message")
 
 def test_no_shell_true_in_source():
-    import pathlib
     project_files = [
         "core/config.py", "core/logger.py", "core/state.py",
         "audio/recorder.py", "audio/vad.py", "audio/stt.py",
@@ -36,7 +38,7 @@ def test_no_shell_true_in_source():
         "execution/apps.py", "execution/linux.py", "main.py",
     ]
     for fname in project_files:
-        path = pathlib.Path(f"/home/rafiii/my-projct/elysia-assistant/{fname}")
-        if path.exists():
-            content = path.read_text()
-            assert "shell=True" not in content, f"Found shell=True in {fname}"
+        path = PROJECT_ROOT / fname
+        assert path.exists(), f"expected source file is missing: {fname}"
+        content = path.read_text()
+        assert "shell=True" not in content, f"Found shell=True in {fname}"

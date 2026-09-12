@@ -68,7 +68,7 @@ Dalam keadaan virtual environment aktif (`source .venv/bin/activate`):
 python main.py
 ```
 
-Elysia akan menginisialisasi model dan mulai mendengarkan wake word. Katakan **"Hei Elysia"** (atau "Jarvis" jika belum memakai file `.ppn` custom) lalu sebutkan perintah Anda, misalnya:
+Elysia akan menginisialisasi model dan mulai mendengarkan wake word. Secara default (`openWakeWord`) frasa pemicunya adalah **"Hey Jarvis"**. Untuk memakai **"Hei Elysia"**, set `OPENWAKEWORD_MODEL_PATH` ke model openWakeWord custom, atau pakai Porcupine dengan file `.ppn` (`WAKE_WORD_ENGINE=porcupine` + `PICOVOICE_ACCESS_KEY`). Setelah wake word, sebutkan perintah Anda, misalnya:
 
 - *"Buka brave browser"*
 - *"Buka file manager"*

@@ -24,29 +24,42 @@ class PorcupineWakeWord:
     def set_on_wake(self, callback: Callable[[], None]):
         self._on_wake = callback
 
+    def _resolve_openwakeword_paths(self) -> list[str]:
+        custom_path = settings.OPENWAKEWORD_MODEL_PATH
+        if custom_path:
+            if not os.path.exists(custom_path):
+                log.warning("openwakeword_custom_model_missing", path=custom_path)
+                return []
+            return [custom_path]
+
+        import openwakeword
+
+        requested = settings.OPENWAKEWORD_MODEL
+        all_paths = openwakeword.get_pretrained_model_paths()
+        paths = [p for p in all_paths if requested in p]
+        if not paths:
+            log.warning(
+                "openwakeword_model_not_found",
+                requested=requested,
+                available=[Path(p).stem for p in all_paths],
+            )
+        return paths
+
     def load(self):
         log.info("wake_word_loading", engine=self._engine)
 
         if self._engine == "openwakeword":
             try:
-                import openwakeword
                 from openwakeword.model import Model
 
-                requested = settings.OPENWAKEWORD_MODEL
-                all_paths = openwakeword.get_pretrained_model_paths()
-                paths = [p for p in all_paths if requested in p]
-                if not paths:
-                    log.warning(
-                        "openwakeword_model_not_found",
-                        requested=requested,
-                        available=[Path(p).stem for p in all_paths],
-                    )
+                # Load only the configured model: loading all bundled models
+                # (alexa, hey_mycroft, ...) would wake on unrelated phrases.
+                model_paths = self._resolve_openwakeword_paths()
+                if not model_paths:
                     self._engine = "porcupine"
                 else:
-                    # Load only the configured model: loading all bundled models
-                    # (alexa, hey_mycroft, ...) would wake on unrelated phrases.
-                    self._openwakeword_model = Model(wakeword_model_paths=paths)
-                    log.info("openwakeword_loaded", model=requested, paths=paths)
+                    self._openwakeword_model = Model(wakeword_model_paths=model_paths)
+                    log.info("openwakeword_loaded", paths=model_paths)
                     return
             except Exception as e:
                 log.warning("openwakeword_load_failed", error=str(e), note="falling back to porcupine if key available")

@@ -39,3 +39,35 @@ def test_unknown_model_falls_back_to_porcupine(monkeypatch):
 
     assert detector._openwakeword_model is None
     assert detector._engine == "porcupine"
+
+
+def test_custom_model_path_takes_priority(monkeypatch, tmp_path):
+    model_file = tmp_path / "hey_elysia.onnx"
+    model_file.write_bytes(b"stub")
+    captured = {}
+
+    class FakeModel:
+        def __init__(self, wakeword_model_paths=None, **kwargs):
+            captured["paths"] = wakeword_model_paths
+
+    monkeypatch.setattr(openwakeword, "get_pretrained_model_paths", lambda: PATHS)
+    monkeypatch.setattr(openwakeword.model, "Model", FakeModel)
+    monkeypatch.setattr(ww.settings, "OPENWAKEWORD_MODEL_PATH", str(model_file))
+
+    detector = ww.PorcupineWakeWord()
+    detector._engine = "openwakeword"
+    detector.load()
+
+    assert captured["paths"] == [str(model_file)]
+
+
+def test_missing_custom_model_falls_back(monkeypatch):
+    monkeypatch.setattr(ww.settings, "OPENWAKEWORD_MODEL_PATH", "/nope/missing.onnx")
+    monkeypatch.setattr(ww.settings, "PICOVOICE_ACCESS_KEY", "")
+
+    detector = ww.PorcupineWakeWord()
+    detector._engine = "openwakeword"
+    detector.load()
+
+    assert detector._openwakeword_model is None
+    assert detector._engine == "porcupine"

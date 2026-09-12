@@ -19,23 +19,33 @@ async def _edge_tts_synthesize(text: str, voice: str) -> Optional[bytes]:
             audio_data += chunk["data"]
     return audio_data if audio_data else None
 
-def synthesize_edge(text: str) -> Optional[bytes]:
+def _synthesize_edge_once(text: str) -> Optional[bytes]:
+    loop = asyncio.new_event_loop()
     try:
-        start = time.perf_counter()
-        loop = asyncio.new_event_loop()
-        try:
-            mp3_bytes = loop.run_until_complete(
-                _edge_tts_synthesize(text, settings.TTS_VOICE_EDGE)
+        return loop.run_until_complete(
+            asyncio.wait_for(
+                _edge_tts_synthesize(text, settings.TTS_VOICE_EDGE),
+                timeout=settings.TTS_EDGE_TIMEOUT_SEC,
             )
-        finally:
-            loop.close()
-        latency_ms = (time.perf_counter() - start) * 1000
-        if mp3_bytes:
-            log.info("tts_edge_synthesized", tts_latency_ms=round(latency_ms, 1), size_bytes=len(mp3_bytes))
-        return mp3_bytes
-    except Exception as e:
-        log.error("tts_edge_failed", error=str(e))
-        return None
+        )
+    finally:
+        loop.close()
+
+def synthesize_edge(text: str) -> Optional[bytes]:
+    for attempt in range(2):  # 1 try + 1 retry (flow.md §5.2)
+        start = time.perf_counter()
+        try:
+            mp3_bytes = _synthesize_edge_once(text)
+            latency_ms = (time.perf_counter() - start) * 1000
+            if mp3_bytes:
+                log.info("tts_edge_synthesized", tts_latency_ms=round(latency_ms, 1), size_bytes=len(mp3_bytes), attempt=attempt + 1)
+                return mp3_bytes
+            log.warning("tts_edge_empty_audio", attempt=attempt + 1)
+        except Exception as e:
+            log.warning("tts_edge_attempt_failed", attempt=attempt + 1, error=str(e))
+
+    log.error("tts_edge_failed", error_code="ERR_TTS_SYNTHESIS", timeout_sec=settings.TTS_EDGE_TIMEOUT_SEC)
+    return None
 
 def synthesize_piper(text: str) -> Optional[bytes]:
     import subprocess

@@ -4,6 +4,7 @@ from typing import Optional
 from faster_whisper import WhisperModel
 from core.config import settings
 from core.logger import get_logger
+from core.utils import run_with_timeout
 
 log = get_logger("stt")
 
@@ -50,14 +51,17 @@ class STT:
         audio_float32 = audio.astype(np.float32) / 32768.0
         audio_float32 = _normalize_peak(audio_float32)
 
-        start = time.perf_counter()
-        try:
+        def _do_transcribe():
             segments, info = self._model.transcribe(
                 audio_float32,
                 language="id",
                 vad_filter=False,
             )
-            text = " ".join([segment.text for segment in segments]).strip()
+            return " ".join([segment.text for segment in segments]).strip(), info
+
+        start = time.perf_counter()
+        try:
+            text, info = run_with_timeout(_do_transcribe, settings.STT_TIMEOUT_MS / 1000)
             latency_ms = (time.perf_counter() - start) * 1000
 
             if not text or info.language_probability < 0.3:
@@ -66,6 +70,9 @@ class STT:
 
             log.info("stt_completed", stt_latency_ms=round(latency_ms, 1), text=text, prob=round(info.language_probability, 2))
             return text
+        except TimeoutError:
+            log.error("stt_timeout", error_code="ERR_STT_TIMEOUT", timeout_ms=settings.STT_TIMEOUT_MS)
+            return ""
         except Exception as e:
             log.error("stt_failed", error=str(e))
             return ""
