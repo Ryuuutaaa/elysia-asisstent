@@ -11,10 +11,10 @@ from agent.prompt import build_system_prompt
 from agent.tools import (
     ToolResponse,
     cancel_action,
+    classify_followup,
     execute_confirmed_action,
     handle_function_call,
     is_affirmation,
-    is_denial,
 )
 from audio.recorder import AudioRecorder, find_device_index, save_debug_audio
 from audio.stt import get_stt
@@ -222,28 +222,12 @@ class ElysiaAssistant:
             if has_pending:
                 self._handle_confirmation_response(text)
                 return
-            if self._await_mode == "followup_answer":
+            if self._await_mode in ("followup_answer", "suggestion_answer"):
                 self._handle_followup_answer(text)
                 return
             if not text:
                 self._respond_error("Maaf, Elysia tidak mendengar perintahmu.")
                 return
-            # Jika user jawab iya setelah Elysia tanya klarifikasi (bukan destructive pending)
-            # contoh: Elysia "maksud kamu terminal?" → user "iya" → eksekusi suggestion
-            if is_affirmation(text) and self._last_suggestion:
-                sug = self._last_suggestion
-                self._last_suggestion = None
-                log.info("suggestion_confirmed", suggestion=sug)
-                argv = resolve_app(sug)
-                if argv:
-                    r = safe_execute(argv)
-                    self._speak_and_ask_followup(
-                        f"{sug.title()} sudah dibuka."
-                        if r.success
-                        else f"Gagal membuka {sug}: {r.message}",
-                        start_e2e,
-                    )
-                    return
             self._run_command(text, start_e2e)
 
         except Exception as e:
@@ -277,8 +261,10 @@ class ElysiaAssistant:
             reply = extract_text(response)
             if not reply:
                 reply = "Maaf, saya tidak mengerti."
-            # simpan suggestion jika reply mengandung klarifikasi
+            # Kalau Elysia balik bertanya (klarifikasi), tunggu jawaban user dulu;
+            # selain itu langsung tawarkan perintah berikutnya.
             low = reply.lower()
+            suggestion = None
             if "maksud kamu" in low or "maksud anda" in low:
                 for cand in [
                     "terminal",
@@ -288,11 +274,14 @@ class ElysiaAssistant:
                     "browser",
                 ]:
                     if cand in low:
-                        self._last_suggestion = cand
+                        suggestion = cand
                         break
+            if suggestion:
+                self._last_suggestion = suggestion
+                self._speak_and_await(reply, "suggestion_answer", start_e2e)
             else:
                 self._last_suggestion = None
-            self._speak_and_ask_followup(reply, start_e2e)
+                self._speak_and_ask_followup(reply, start_e2e)
 
     def _handle_confirmation_response(self, text: str):
         with self._pending_lock:
@@ -357,8 +346,12 @@ class ElysiaAssistant:
             self._wake_word.resume()
 
     def _speak_and_ask_followup(self, text: str, start_e2e: float = 0.0):
-        """Speak the response plus "Ada perintah lain?", then listen for the
-        yes/no answer without requiring the wake word again."""
+        """Speak the response plus "Ada perintah lain?", then listen for the answer."""
+        self._speak_and_await(f"{text} Ada perintah lain?", "followup_answer", start_e2e)
+
+    def _speak_and_await(self, prompt: str, mode: str, start_e2e: float = 0.0):
+        """Speak `prompt`, then listen for the user's reply without a wake word.
+        `mode` tells _process_pipeline how to interpret that reply."""
         if not self._fsm.transition_to(AssistantState.SPEAKING):
             return
 
@@ -366,7 +359,7 @@ class ElysiaAssistant:
         self._wake_word.pause()
 
         try:
-            speak(f"{text} Ada perintah lain?")
+            speak(prompt)
         finally:
             if start_e2e > 0:
                 e2e_ms = (time.perf_counter() - start_e2e) * 1000
@@ -384,11 +377,13 @@ class ElysiaAssistant:
             except Exception as e:
                 log.warning("unmute_after_followup_ask_failed", error=str(e))
 
-        timeout_ms = int(settings.FOLLOWUP_TIMEOUT_SEC * 1000)
-        self._await_mode = "followup_answer"
+        answer_ms = int(settings.FOLLOWUP_TIMEOUT_SEC * 1000)
+        self._await_mode = mode
         if self._fsm.transition_to(AssistantState.LISTENING):
+            # `answer_ms` bounds how long we wait for the user to start; the extra
+            # window lets them finish a reply that begins near the deadline.
             self._start_listening(
-                max_record_ms=timeout_ms, no_speech_grace_ms=timeout_ms
+                max_record_ms=answer_ms + 5000, no_speech_grace_ms=answer_ms
             )
             try:
                 self._wake_word.reset()
@@ -401,16 +396,33 @@ class ElysiaAssistant:
             self._wake_word.resume()
 
     def _handle_followup_answer(self, text: str):
+        mode = self._await_mode
         self._await_mode = None
+        suggestion = self._last_suggestion
+        self._last_suggestion = None
 
-        if is_affirmation(text):
-            log.info("followup_accepted")
-            self._speak_and_listen_for_command()
-            return
+        intent = classify_followup(text)
 
-        if not text.strip() or is_denial(text):
+        if intent == "no":
             log.info("session_ended", reason="no_followup")
             self._speak_and_idle("Baik, panggil aku kalau butuh lagi.")
+            return
+
+        if intent == "yes":
+            if mode == "suggestion_answer" and suggestion:
+                log.info("suggestion_confirmed", suggestion=suggestion)
+                argv = resolve_app(suggestion)
+                if argv:
+                    r = safe_execute(argv)
+                    self._speak_and_ask_followup(
+                        f"{suggestion.title()} sudah dibuka."
+                        if r.success
+                        else f"Gagal membuka {suggestion}: {r.message}",
+                        time.perf_counter(),
+                    )
+                    return
+            log.info("followup_accepted")
+            self._speak_and_listen_for_command()
             return
 
         # User menjawab langsung dengan perintah berikutnya.
@@ -452,6 +464,7 @@ class ElysiaAssistant:
 
     def _speak_and_idle(self, text: str, start_e2e: float = 0.0):
         self._await_mode = None
+        self._last_suggestion = None
         if not self._fsm.transition_to(AssistantState.SPEAKING):
             return
 

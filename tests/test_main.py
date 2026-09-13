@@ -214,6 +214,51 @@ def test_followup_direct_command_runs(monkeypatch):
     assert commands == ["buka spotify"]
 
 
+def test_followup_affirmation_with_command_runs_it(monkeypatch):
+    # 'oke buka spotify' must run the command, not be swallowed as a plain 'yes'.
+    assistant = ElysiaAssistant()
+    assistant._await_mode = "followup_answer"
+    commands = []
+    listened = []
+    monkeypatch.setattr(assistant, "_run_command", lambda text, start_e2e=0.0: commands.append(text))
+    monkeypatch.setattr(assistant, "_speak_and_listen_for_command", lambda: listened.append(True))
+
+    assistant._handle_followup_answer("oke buka spotify")
+
+    assert commands == ["oke buka spotify"]
+    assert listened == []
+
+
+def test_suggestion_answer_executes_suggestion(monkeypatch):
+    assistant = ElysiaAssistant()
+    assistant._await_mode = "suggestion_answer"
+    assistant._last_suggestion = "terminal"
+    spoken = []
+    monkeypatch.setattr("main.resolve_app", lambda name: ["kitty"])
+    monkeypatch.setattr("main.safe_execute", lambda argv: MagicMock(success=True, message="ok"))
+    monkeypatch.setattr(
+        assistant, "_speak_and_ask_followup", lambda text, start_e2e=0.0: spoken.append(text)
+    )
+
+    assistant._handle_followup_answer("iya")
+
+    assert spoken and "Terminal sudah dibuka" in spoken[0]
+    assert assistant._last_suggestion is None
+
+
+def test_suggestion_answer_denial_clears_suggestion(monkeypatch):
+    assistant = ElysiaAssistant()
+    assistant._await_mode = "suggestion_answer"
+    assistant._last_suggestion = "terminal"
+    spoken = []
+    monkeypatch.setattr(assistant, "_speak_and_idle", lambda text, *args, **kwargs: spoken.append(text))
+
+    assistant._handle_followup_answer("tidak")
+
+    assert assistant._last_suggestion is None
+    assert spoken
+
+
 def test_pipeline_routes_to_followup_handler(monkeypatch):
     monkeypatch.setattr(settings, "DEBUG_RECORD_AUDIO", False)
     assistant = ElysiaAssistant()

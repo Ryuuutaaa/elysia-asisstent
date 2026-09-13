@@ -44,6 +44,24 @@ def is_denial(text: str) -> bool:
         return False
     return bool(words & DENY_WORDS) and not bool(words & CONFIRM_WORDS)
 
+
+def classify_followup(text: str) -> str:
+    """Classify a reply to 'Ada perintah lain?'. Returns 'yes', 'no', or 'command'.
+
+    Only a bare answer (at most two tokens, e.g. 'iya', 'tidak usah') counts as
+    yes/no. A longer utterance is treated as the next command, so 'oke buka
+    spotify' runs the command instead of being swallowed as a plain 'yes'."""
+    words = re.findall(r"\w+", text.lower())
+    if not words:
+        return "no"
+    word_set = set(words)
+    if len(words) <= 2:
+        if word_set & CONFIRM_WORDS:
+            return "yes"
+        if word_set & DENY_WORDS:
+            return "no"
+    return "command"
+
 @dataclass
 class ToolResponse:
     text: str

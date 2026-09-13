@@ -1,7 +1,14 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from google.genai import types
-from agent.tools import handle_function_call, cancel_action, execute_confirmed_action, is_affirmation, is_denial
+from agent.tools import (
+    classify_followup,
+    handle_function_call,
+    cancel_action,
+    execute_confirmed_action,
+    is_affirmation,
+    is_denial,
+)
 
 @patch("agent.tools.safe_execute", return_value=MagicMock(success=True, message="opened"))
 def test_open_valid_app(mock_exec):
@@ -95,3 +102,20 @@ def test_is_denial_positive(text):
 @pytest.mark.parametrize("text", ["ya", "iya, buka spotify", "buka terminal", "", "   ", "ya tidak"])
 def test_is_denial_negative(text):
     assert is_denial(text) is False
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("iya", "yes"),
+    ("oke", "yes"),
+    ("iya silakan", "yes"),
+    ("tidak", "no"),
+    ("sudah cukup", "no"),
+    ("", "no"),
+    ("   ", "no"),
+    ("oke buka spotify", "command"),
+    ("buka terminal", "command"),
+    ("iya, buka terminal", "command"),
+    ("sudah, buka spotify", "command"),
+])
+def test_classify_followup(text, expected):
+    assert classify_followup(text) == expected
