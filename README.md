@@ -9,7 +9,7 @@ Elysia adalah asisten pribadi *speech-to-speech* modular berbasis Python yang be
 - **Wake Word Engine**: Picovoice Porcupine (custom keyword `.ppn` / built-in `jarvis`)
 - **VAD / Endpointing**: Silero VAD (`snakers4/silero-vad` via Torch)
 - **STT (Speech-to-Text)**: `faster-whisper` (CTranslate2, model `small` int8)
-- **LLM & Orkestrasi**: Gemini 3.8 Flash via SDK `google-genai` dengan Function Calling
+- **LLM & Orkestrasi**: Gemini 2.0 Flash via SDK `google-genai` dengan Function Calling
 - **Execution Layer**: Python `subprocess` + strict allowlist (`shell=False`)
 - **TTS (Text-to-Speech)**: Edge TTS (`id-ID-GadisNeural`) + Piper TTS (offline fallback)
 - **Audio Server**: PipeWire / PulseAudio via `sounddevice`

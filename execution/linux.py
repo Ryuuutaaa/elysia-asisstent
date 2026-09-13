@@ -1,7 +1,6 @@
 import subprocess
 import shutil
 import time
-from typing import Optional
 from core.logger import get_logger
 
 log = get_logger("linux_executor")
@@ -31,15 +30,19 @@ def safe_execute(argv: list[str], timeout: float = 5.0) -> ExecutionResult:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        latency_ms = (time.perf_counter() - start) * 1000
+        try:
+            probe_timeout = min(timeout, 0.5) if timeout else 0.5
+            ret = process.wait(timeout=probe_timeout)
+            latency_ms = (time.perf_counter() - start) * 1000
+            if ret != 0:
+                log.error("tool_immediate_exit", command=argv, returncode=ret)
+                return ExecutionResult(False, f"{binary} keluar dengan kode {ret}.", latency_ms)
+        except subprocess.TimeoutExpired:
+            latency_ms = (time.perf_counter() - start) * 1000
+            log.info("tool_executed", command=argv, pid=process.pid, exec_latency_ms=round(latency_ms, 1), status="ok")
+            return ExecutionResult(True, f"{binary} berhasil dibuka.", latency_ms)
 
-        log.info(
-            "tool_executed",
-            command=argv,
-            pid=process.pid,
-            exec_latency_ms=round(latency_ms, 1),
-            status="ok",
-        )
+        log.info("tool_executed", command=argv, pid=process.pid, exec_latency_ms=round(latency_ms, 1), status="ok")
         return ExecutionResult(True, f"{binary} berhasil dibuka.", latency_ms)
     except PermissionError:
         latency_ms = (time.perf_counter() - start) * 1000

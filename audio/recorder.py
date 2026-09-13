@@ -80,6 +80,11 @@ def find_device_index(source_type: str) -> Optional[int]:
     for attempt in range(3):
         try:
             source_name = resolve_pulse_source(source_type)
+            if source_name:
+                os.environ["PULSE_SOURCE"] = source_name
+            else:
+                os.environ.pop("PULSE_SOURCE", None)
+
             if source_type == "speaker" and not source_name:
                 log.warning("speaker_monitor_not_found", attempt=attempt + 1)
                 time.sleep(1.0)
@@ -90,11 +95,6 @@ def find_device_index(source_type: str) -> Optional[int]:
                 log.warning("audio_input_device_not_found", attempt=attempt + 1)
                 time.sleep(1.0)
                 continue
-
-            if source_name:
-                os.environ["PULSE_SOURCE"] = source_name
-            else:
-                os.environ.pop("PULSE_SOURCE", None)
 
             log.info(
                 "audio_device_selected",
@@ -213,11 +213,33 @@ class AudioRecorder:
         return audio
 
     def mute(self):
-        if self._stream and self._stream.active:
-            self._stream.stop()
+        ok = False
+        try:
+            if self._stream and getattr(self._stream, "active", False):
+                self._stream.stop()
+                ok = True
+        except Exception as e:
+            log.warning("mic_mute_failed", error=str(e))
+        try:
+            src = resolve_pulse_source(settings.AUDIO_INPUT_SOURCE) or _run_pactl(["get-default-source"])
+            if src:
+                subprocess.run(["pactl", "set-source-mute", src, "1"], timeout=2.0, shell=False, capture_output=True)
+                ok = True
+        except Exception:
+            pass
+        if ok:
             log.info("mic_muted")
 
     def unmute(self):
-        if self._stream and not self._stream.active:
-            self._stream.start()
-            log.info("mic_unmuted")
+        try:
+            if self._stream and not getattr(self._stream, "active", False) and self._stream:
+                self._stream.start()
+        except Exception as e:
+            log.warning("mic_unmute_failed", error=str(e))
+        try:
+            src = resolve_pulse_source(settings.AUDIO_INPUT_SOURCE) or _run_pactl(["get-default-source"])
+            if src:
+                subprocess.run(["pactl", "set-source-mute", src, "0"], timeout=2.0, shell=False, capture_output=True)
+        except Exception:
+            pass
+        log.info("mic_unmuted")

@@ -114,3 +114,84 @@ def test_vad_without_model_ends_at_max_duration():
     vad.reset(max_record_ms=1000, no_speech_grace_ms=1000)
     vad._start_time = _time.perf_counter() - 2.0
     assert vad.process_frame(np.zeros(512, dtype=np.int16)) is True
+
+
+def test_no_speech_grace_allows_time_to_start_speaking():
+    import time as _time
+    from core.config import settings
+    vad = _make_vad_with_speech_prob(0.0)
+    vad.reset()
+    assert vad._no_speech_grace_ms == settings.VAD_NO_SPEECH_GRACE_MS
+
+    vad._start_time = _time.perf_counter() - 1.6
+    vad._last_speech_time = vad._start_time
+    assert vad.process_frame(np.zeros(512, dtype=np.int16)) is False
+
+    late = settings.VAD_NO_SPEECH_GRACE_MS / 1000 + 0.2
+    vad._start_time = _time.perf_counter() - late
+    vad._last_speech_time = vad._start_time
+    assert vad.process_frame(np.zeros(512, dtype=np.int16)) is True
+
+
+def test_normalize_peak_skips_near_silence():
+    from audio.stt import _normalize_peak
+    tiny = np.full(64, 0.001, dtype=np.float32)
+    out = _normalize_peak(tiny)
+    assert np.allclose(out, tiny)
+
+
+def test_vad_ignores_initial_tail_window():
+    import time as _time
+    from core.config import settings
+    vad = _make_vad_with_speech_prob(0.9)
+    vad.reset()
+    vad._start_time = _time.perf_counter() - (settings.VAD_START_IGNORE_MS / 1000) / 2
+    assert vad.process_frame(np.zeros(512, dtype=np.int16)) is False
+    assert vad.speech_detected is False
+
+
+def test_vad_speech_detected_flag_after_tail_window():
+    import time as _time
+    from core.config import settings
+    vad = _make_vad_with_speech_prob(0.9)
+    vad.reset()
+    vad._start_time = _time.perf_counter() - (settings.VAD_START_IGNORE_MS / 1000 + 0.3)
+    vad.process_frame(np.zeros(512, dtype=np.int16))
+    assert vad.speech_detected is True
+
+
+def test_stt_skips_quiet_audio_without_calling_model():
+    from audio.stt import STT
+    stt = STT()
+    stt._model = MagicMock()
+    quiet = np.full(16000, 50, dtype=np.int16)  # rms ~0.0015 < STT_MIN_RMS
+    assert stt.transcribe(quiet) == ""
+    stt._model.transcribe.assert_not_called()
+
+
+def test_vad_uses_configured_threshold(monkeypatch):
+    from core.config import settings
+    monkeypatch.setattr(settings, "VAD_THRESHOLD", 0.7)
+    assert SileroVAD()._threshold == 0.7
+
+
+def test_vad_explicit_threshold_overrides_config(monkeypatch):
+    from core.config import settings
+    monkeypatch.setattr(settings, "VAD_THRESHOLD", 0.7)
+    assert SileroVAD(threshold=0.3)._threshold == 0.3
+
+
+def test_stt_uses_configured_language(monkeypatch):
+    from core.config import settings
+    monkeypatch.setattr(settings, "STT_LANGUAGE", "en")
+    stt = STT()
+    stt._model = MagicMock()
+    segment = MagicMock()
+    segment.text = "hello world"
+    info = MagicMock()
+    info.language_probability = 0.95
+    stt._model.transcribe.return_value = ([segment], info)
+    audio = (np.sin(np.linspace(0, 100, 16000)) * 10000).astype(np.int16)
+    stt.transcribe(audio)
+    _, kwargs = stt._model.transcribe.call_args
+    assert kwargs.get("language") == "en"

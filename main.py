@@ -1,24 +1,35 @@
-import sys
-import time
 import signal
+import sys
 import threading
-import numpy as np
+import time
 from typing import Optional
 
-from core.config import settings
-from core.logger import configure_logging, get_logger, new_session_id
-from core.state import StateMachine, AssistantState
+import numpy as np
+
+from agent.llm import chat, extract_function_call, extract_text
+from agent.prompt import build_system_prompt
+from agent.tools import (
+    ToolResponse,
+    cancel_action,
+    execute_confirmed_action,
+    handle_function_call,
+    is_affirmation,
+    is_denial,
+)
 from audio.recorder import AudioRecorder, find_device_index, save_debug_audio
-from audio.vad import SileroVAD
 from audio.stt import get_stt
 from audio.tts import speak
+from audio.vad import SileroVAD
 from audio.wake_word import PorcupineWakeWord
-from agent.prompt import build_system_prompt
-from agent.llm import chat, extract_function_call, extract_text
-from agent.tools import handle_function_call, execute_confirmed_action, cancel_action, is_affirmation, ToolResponse
+from core.config import settings
+from core.logger import configure_logging, get_logger, new_session_id
+from core.state import AssistantState, StateMachine
+from execution.apps import resolve_app
+from execution.linux import safe_execute
 
 configure_logging()
 log = get_logger("main")
+
 
 class ElysiaAssistant:
     def __init__(self):
@@ -30,19 +41,82 @@ class ElysiaAssistant:
         self._wake_word = PorcupineWakeWord()
         self._system_prompt = build_system_prompt()
         self._pending_confirmation = None
+        self._pending_lock = threading.Lock()
         self._session_id = ""
+        self._last_suggestion: Optional[str] = None
+        self._await_mode: Optional[str] = None
+        self._vad_errors = 0
+        self._pipeline_thread: Optional[threading.Thread] = None
+        self._shutdown_done = False
 
-    def initialize(self):
+    def initialize(self, skip_diagnostics: bool = False):
         log.info("startup_begin")
         start = time.perf_counter()
 
         device_index = find_device_index(settings.AUDIO_INPUT_SOURCE)
+
+        if not skip_diagnostics:
+            try:
+                from audio.diagnostics import run_preflight_diagnostics
+
+                run_preflight_diagnostics(device_index, interactive=True)
+            except Exception as e:
+                log.warning("diagnostics_failed", error=str(e))
+        if not settings.GOOGLE_API_KEY or settings.GOOGLE_API_KEY.strip() in (
+            "",
+            "AIzaSy...",
+            "AIzaSy_REPLACE_WITH_YOUR_KEY",
+        ):
+            log.error("gemini_api_key_missing")
+            print("\n  ✗ GEMINI API KEY kosong/placeholder — isi .env dulu")
+            sys.exit(1)
+        else:
+            try:
+                from agent.llm import resolve_model, scan_available_models
+
+                t0 = time.perf_counter()
+                available = scan_available_models()
+                scan_ms = (time.perf_counter() - t0) * 1000
+                print(
+                    f"\n  ── Gemini model scan ({len(available)} model, {scan_ms:.0f}ms) ──"
+                )
+                for m in available[:12]:
+                    print(f"    • {m}")
+                wanted = settings.GEMINI_MODEL
+                print(f"\n  ── Resolve model: {wanted} ──")
+                t1 = time.perf_counter()
+                resolved = resolve_model(wanted, available)
+                probe_ms = (time.perf_counter() - t1) * 1000
+                if resolved != wanted:
+                    print(
+                        f"  ⚠ FALLBACK  {wanted} tidak tersedia → pakai {resolved}  ({probe_ms:.0f}ms)"
+                    )
+                    log.warning(
+                        "gemini_model_fallback", requested=wanted, resolved=resolved
+                    )
+                else:
+                    print(f"  ✓ ACTIVE  {resolved}  ({probe_ms:.0f}ms)")
+            except Exception as e:
+                log.error("gemini_model_resolve_failed", error=str(e)[:200])
+                print(f"  ! Resolusi model gagal: {str(e)[:200]}")
+                print(
+                    "    Elysia tetap jalan; perintah suara akan error sampai GEMINI_MODEL valid."
+                )
+
         self._recorder = AudioRecorder(device_index=device_index)
 
         try:
             self._wake_word.load()
         except Exception as e:
-            log.warning("wake_word_init_skipped", error=str(e), note="Check PICOVOICE_ACCESS_KEY in .env")
+            log.critical("wake_word_init_failed", error=str(e))
+            print(
+                "\n  ✗ Wake word engine gagal dimuat.\n"
+                "    Opsi: (a) pastikan paket openwakeword terpasang & OPENWAKEWORD_MODEL valid,\n"
+                "          (b) set WAKE_WORD_ENGINE=porcupine + PICOVOICE_ACCESS_KEY di .env.\n"
+                f"    Detail: {e}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         try:
             self._vad.load()
@@ -68,75 +142,109 @@ class ElysiaAssistant:
             return
 
         self._session_id = new_session_id()
+        self._await_mode = None
         log.info("wake_word_triggered", session_id=self._session_id)
 
         if self._fsm.transition_to(AssistantState.LISTENING):
             self._wake_word.pause()
             self._start_listening()
 
-    def _start_listening(self, max_record_ms: Optional[int] = None, no_speech_grace_ms: Optional[int] = None):
-        self._vad.reset(max_record_ms=max_record_ms, no_speech_grace_ms=no_speech_grace_ms)
+    def _start_listening(
+        self,
+        max_record_ms: Optional[int] = None,
+        no_speech_grace_ms: Optional[int] = None,
+    ):
+        self._vad.reset(
+            max_record_ms=max_record_ms, no_speech_grace_ms=no_speech_grace_ms
+        )
         self._recorder.start_recording()
 
     def _on_audio_frame(self, frame: np.ndarray):
-        state = self._fsm.current_state
-
+        if self._recorder is None:
+            return
+        try:
+            state = self._fsm.current_state
+        except Exception:
+            return
         if state == AssistantState.IDLE:
-            self._wake_word.process_frame(frame)
+            try:
+                self._wake_word.process_frame(frame)
+            except Exception as e:
+                log.error("wake_process_error", error=str(e))
         elif state == AssistantState.LISTENING:
-            is_endpoint = self._vad.process_frame(frame)
+            try:
+                is_endpoint = self._vad.process_frame(frame)
+            except Exception as e:
+                self._vad_errors += 1
+                log.error(
+                    "vad_callback_error", error=str(e), consecutive=self._vad_errors
+                )
+                if self._vad_errors >= 5:
+                    self._vad_errors = 0
+                    self._recorder.stop_recording()
+                    self._fsm.reset_to_idle("vad_repeated_error")
+                    self._wake_word.resume()
+                return
+            self._vad_errors = 0
             if is_endpoint:
-                self._handle_recording_complete()
+                try:
+                    self._handle_recording_complete()
+                except Exception as e:
+                    log.error("recording_complete_error", error=str(e))
+                    self._fsm.reset_to_idle("callback_error")
+                    self._wake_word.resume()
 
     def _handle_recording_complete(self):
+        had_speech = self._vad.speech_detected
         self._vad.stop()
         audio = self._recorder.stop_recording()
-
         if not self._fsm.transition_to(AssistantState.PROCESSING):
             return
+        self._pipeline_thread = threading.Thread(
+            target=self._process_pipeline, args=(audio, had_speech), daemon=True
+        )
+        self._pipeline_thread.start()
 
-        threading.Thread(target=self._process_pipeline, args=(audio,), daemon=True).start()
-
-    def _process_pipeline(self, audio: np.ndarray):
+    def _process_pipeline(self, audio: np.ndarray, had_speech: bool = True):
         start_e2e = time.perf_counter()
         try:
-            suffix = "-confirm" if self._pending_confirmation else ""
+            with self._pending_lock:
+                has_pending = self._pending_confirmation is not None
+            suffix = "-confirm" if has_pending else ""
             save_debug_audio(self._session_id, audio, suffix=suffix)
-            text = self._stt.transcribe(audio) if len(audio) > 0 else ""
-
-            if self._pending_confirmation:
+            if had_speech:
+                text = self._stt.transcribe(audio) if len(audio) > 0 else ""
+            else:
+                log.info("no_speech_recorded", session_id=self._session_id)
+                text = ""
+            with self._pending_lock:
+                has_pending = self._pending_confirmation is not None
+            if has_pending:
                 self._handle_confirmation_response(text)
                 return
-
+            if self._await_mode == "followup_answer":
+                self._handle_followup_answer(text)
+                return
             if not text:
                 self._respond_error("Maaf, Elysia tidak mendengar perintahmu.")
                 return
-
-            log.info("processing_user_text", text=text, session_id=self._session_id)
-
-            try:
-                response = chat(text, self._system_prompt)
-            except Exception as e:
-                log.error("llm_call_failed", error=str(e), error_code="ERR_LLM_TIMEOUT")
-                self._respond_error("Maaf, koneksi ke otak Elysia sedang terganggu.")
-                return
-
-            fn_call = extract_function_call(response)
-            if fn_call:
-                tool_res: ToolResponse = handle_function_call(fn_call)
-                if tool_res.needs_confirmation:
-                    self._pending_confirmation = {
-                        "action": tool_res.pending_action,
-                        "argv": tool_res.pending_argv,
-                    }
-                    self._speak_and_listen(tool_res.text)
-                else:
-                    self._speak_and_idle(tool_res.text, start_e2e)
-            else:
-                reply = extract_text(response)
-                if not reply:
-                    reply = "Maaf, saya tidak mengerti."
-                self._speak_and_idle(reply, start_e2e)
+            # Jika user jawab iya setelah Elysia tanya klarifikasi (bukan destructive pending)
+            # contoh: Elysia "maksud kamu terminal?" → user "iya" → eksekusi suggestion
+            if is_affirmation(text) and self._last_suggestion:
+                sug = self._last_suggestion
+                self._last_suggestion = None
+                log.info("suggestion_confirmed", suggestion=sug)
+                argv = resolve_app(sug)
+                if argv:
+                    r = safe_execute(argv)
+                    self._speak_and_ask_followup(
+                        f"{sug.title()} sudah dibuka."
+                        if r.success
+                        else f"Gagal membuka {sug}: {r.message}",
+                        start_e2e,
+                    )
+                    return
+            self._run_command(text, start_e2e)
 
         except Exception as e:
             log.error("pipeline_error", error=str(e))
@@ -145,9 +253,52 @@ class ElysiaAssistant:
                 self._fsm.reset_to_idle("pipeline_error")
                 self._wake_word.resume()
 
+    def _run_command(self, text: str, start_e2e: float = 0.0):
+        log.info("processing_user_text", text=text, session_id=self._session_id)
+        try:
+            response = chat(text, self._system_prompt)
+        except Exception as e:
+            log.error("llm_call_failed", error=str(e), error_code="ERR_LLM_TIMEOUT")
+            self._respond_error("Maaf, koneksi ke otak Elysia sedang terganggu.")
+            return
+        fn_call = extract_function_call(response)
+        if fn_call:
+            tool_res: ToolResponse = handle_function_call(fn_call)
+            if tool_res.needs_confirmation:
+                with self._pending_lock:
+                    self._pending_confirmation = {
+                        "action": tool_res.pending_action,
+                        "argv": tool_res.pending_argv,
+                    }
+                self._speak_and_listen(tool_res.text)
+            else:
+                self._speak_and_ask_followup(tool_res.text, start_e2e)
+        else:
+            reply = extract_text(response)
+            if not reply:
+                reply = "Maaf, saya tidak mengerti."
+            # simpan suggestion jika reply mengandung klarifikasi
+            low = reply.lower()
+            if "maksud kamu" in low or "maksud anda" in low:
+                for cand in [
+                    "terminal",
+                    "brave browser",
+                    "file manager",
+                    "spotify",
+                    "browser",
+                ]:
+                    if cand in low:
+                        self._last_suggestion = cand
+                        break
+            else:
+                self._last_suggestion = None
+            self._speak_and_ask_followup(reply, start_e2e)
+
     def _handle_confirmation_response(self, text: str):
-        pending = self._pending_confirmation
-        self._pending_confirmation = None
+        with self._pending_lock:
+            pending = self._pending_confirmation
+            if pending:
+                self._pending_confirmation = None
 
         if not pending:
             self._speak_and_idle("Tidak ada perintah yang menunggu konfirmasi.")
@@ -167,6 +318,8 @@ class ElysiaAssistant:
 
     def _speak_and_listen(self, text: str):
         if not self._fsm.transition_to(AssistantState.SPEAKING):
+            with self._pending_lock:
+                self._pending_confirmation = None
             return
 
         self._recorder.mute()
@@ -175,17 +328,130 @@ class ElysiaAssistant:
         try:
             speak(text)
         finally:
-            self._recorder.unmute()
+            # Keep the mic muted through the cooldown: the prompt itself says
+            # "Jawab 'ya' untuk konfirmasi", so its echo/reverb must not be
+            # captured as a positive confirmation of a destructive action.
+            try:
+                time.sleep(settings.COOLDOWN_SEC)
+            except Exception:
+                pass
+            try:
+                self._recorder.unmute()
+            except Exception as e:
+                log.warning("unmute_after_confirm_prompt_failed", error=str(e))
 
         timeout_ms = int(settings.CONFIRMATION_TIMEOUT_SEC * 1000)
         if self._fsm.transition_to(AssistantState.LISTENING):
-            self._start_listening(max_record_ms=timeout_ms, no_speech_grace_ms=timeout_ms)
+            self._start_listening(
+                max_record_ms=timeout_ms, no_speech_grace_ms=timeout_ms
+            )
+            try:
+                self._wake_word.reset()
+            except Exception:
+                pass
         else:
-            self._pending_confirmation = None
-            self._fsm.transition_to(AssistantState.IDLE)
+            with self._pending_lock:
+                self._pending_confirmation = None
+            if not self._fsm.transition_to(AssistantState.IDLE):
+                self._fsm.reset_to_idle("speak_and_listen_fallback")
+            self._wake_word.resume()
+
+    def _speak_and_ask_followup(self, text: str, start_e2e: float = 0.0):
+        """Speak the response plus "Ada perintah lain?", then listen for the
+        yes/no answer without requiring the wake word again."""
+        if not self._fsm.transition_to(AssistantState.SPEAKING):
+            return
+
+        self._recorder.mute()
+        self._wake_word.pause()
+
+        try:
+            speak(f"{text} Ada perintah lain?")
+        finally:
+            if start_e2e > 0:
+                e2e_ms = (time.perf_counter() - start_e2e) * 1000
+                log.info(
+                    "cycle_complete",
+                    total_e2e_latency_ms=round(e2e_ms, 1),
+                    session_id=self._session_id,
+                )
+            try:
+                time.sleep(settings.COOLDOWN_SEC)
+            except Exception:
+                pass
+            try:
+                self._recorder.unmute()
+            except Exception as e:
+                log.warning("unmute_after_followup_ask_failed", error=str(e))
+
+        timeout_ms = int(settings.FOLLOWUP_TIMEOUT_SEC * 1000)
+        self._await_mode = "followup_answer"
+        if self._fsm.transition_to(AssistantState.LISTENING):
+            self._start_listening(
+                max_record_ms=timeout_ms, no_speech_grace_ms=timeout_ms
+            )
+            try:
+                self._wake_word.reset()
+            except Exception:
+                pass
+        else:
+            self._await_mode = None
+            if not self._fsm.transition_to(AssistantState.IDLE):
+                self._fsm.reset_to_idle("followup_ask_fallback")
+            self._wake_word.resume()
+
+    def _handle_followup_answer(self, text: str):
+        self._await_mode = None
+
+        if is_affirmation(text):
+            log.info("followup_accepted")
+            self._speak_and_listen_for_command()
+            return
+
+        if not text.strip() or is_denial(text):
+            log.info("session_ended", reason="no_followup")
+            self._speak_and_idle("Baik, panggil aku kalau butuh lagi.")
+            return
+
+        # User menjawab langsung dengan perintah berikutnya.
+        log.info("followup_direct_command", text=text)
+        self._run_command(text, time.perf_counter())
+
+    def _speak_and_listen_for_command(self):
+        """Short ack, then listen for the next command without a wake word."""
+        if not self._fsm.transition_to(AssistantState.SPEAKING):
+            if not self._fsm.transition_to(AssistantState.IDLE):
+                self._fsm.reset_to_idle("followup_command_fallback")
+            self._wake_word.resume()
+            return
+
+        self._recorder.mute()
+        self._wake_word.pause()
+        try:
+            speak("Silakan.")
+        finally:
+            try:
+                time.sleep(settings.COOLDOWN_SEC)
+            except Exception:
+                pass
+            try:
+                self._recorder.unmute()
+            except Exception as e:
+                log.warning("unmute_after_followup_ack_failed", error=str(e))
+
+        if self._fsm.transition_to(AssistantState.LISTENING):
+            self._start_listening()
+            try:
+                self._wake_word.reset()
+            except Exception:
+                pass
+        else:
+            if not self._fsm.transition_to(AssistantState.IDLE):
+                self._fsm.reset_to_idle("followup_command_fallback")
             self._wake_word.resume()
 
     def _speak_and_idle(self, text: str, start_e2e: float = 0.0):
+        self._await_mode = None
         if not self._fsm.transition_to(AssistantState.SPEAKING):
             return
 
@@ -197,13 +463,35 @@ class ElysiaAssistant:
         finally:
             if start_e2e > 0:
                 e2e_ms = (time.perf_counter() - start_e2e) * 1000
-                log.info("cycle_complete", total_e2e_latency_ms=round(e2e_ms, 1), session_id=self._session_id)
+                log.info(
+                    "cycle_complete",
+                    total_e2e_latency_ms=round(e2e_ms, 1),
+                    session_id=self._session_id,
+                )
 
-            # Cooldown delay before unmuting mic & resuming wake word to avoid acoustic feedback/reverb
-            time.sleep(settings.COOLDOWN_SEC)
-            self._recorder.unmute()
-            self._fsm.transition_to(AssistantState.IDLE)
-            self._wake_word.resume()
+            cooldown = max(settings.COOLDOWN_SEC, 3.0)
+            try:
+                time.sleep(cooldown)
+            except Exception:
+                pass
+            try:
+                self._recorder.unmute()
+            except Exception as e:
+                log.warning("unmute_after_speak_failed", error=str(e))
+            try:
+                self._wake_word.reset()
+            except Exception:
+                pass
+            try:
+                if not self._fsm.transition_to(AssistantState.IDLE):
+                    self._fsm.reset_to_idle("speak_and_idle_fallback")
+            except Exception as e:
+                log.warning("fsm_idle_after_speak_failed", error=str(e))
+                self._fsm.reset_to_idle("speak_and_idle_fallback")
+            try:
+                self._wake_word.resume()
+            except Exception as e:
+                log.warning("wake_resume_after_speak_failed", error=str(e))
 
     def _respond_error(self, message: str):
         self._speak_and_idle(message)
@@ -213,7 +501,9 @@ class ElysiaAssistant:
         try:
             self._recorder.start_stream()
         except Exception as e:
-            log.critical("audio_stream_start_failed", error_code="ERR_AUDIO_INPUT", error=str(e))
+            log.critical(
+                "audio_stream_start_failed", error_code="ERR_AUDIO_INPUT", error=str(e)
+            )
             print(
                 "[Elysia] Gagal membuka perangkat audio. Periksa mikrofon dan AUDIO_INPUT_SOURCE di .env.",
                 file=sys.stderr,
@@ -232,17 +522,52 @@ class ElysiaAssistant:
         self.shutdown()
 
     def shutdown(self):
-        if not self._running:
+        if self._shutdown_done:
             return
+        self._shutdown_done = True
         log.info("shutdown_initiated")
         self._running = False
-        if self._recorder:
-            self._recorder.stop_stream()
-        if self._wake_word:
-            self._wake_word.delete()
+
+        with self._pending_lock:
+            self._pending_confirmation = None
+        self._await_mode = None
+
+        if self._pipeline_thread is not None and self._pipeline_thread.is_alive():
+            self._pipeline_thread.join(timeout=3.0)
+
+        if self._recorder is not None:
+            try:
+                self._recorder.stop_stream()
+            except Exception as e:
+                log.warning("recorder_stop_stream_failed", error=str(e))
+        if self._wake_word is not None:
+            try:
+                self._wake_word.delete()
+            except Exception as e:
+                log.warning("wake_word_delete_failed", error=str(e))
         log.info("shutdown_complete")
 
+
 def main():
+    import argparse
+
+    p = argparse.ArgumentParser(description="Elysia assistant")
+    p.add_argument(
+        "--skip-diagnostics", action="store_true", help="skip speaker/mic quality check"
+    )
+    p.add_argument(
+        "--diagnostics-only", action="store_true", help="only run diagnostics then exit"
+    )
+    args = p.parse_args()
+
+    if args.diagnostics_only:
+        from audio.diagnostics import run_preflight_diagnostics
+        from audio.recorder import find_device_index as _fdi
+
+        idx = _fdi(settings.AUDIO_INPUT_SOURCE)
+        run_preflight_diagnostics(idx, interactive=True)
+        sys.exit(0)
+
     assistant = ElysiaAssistant()
 
     def sig_handler(sig, frame):
@@ -252,8 +577,9 @@ def main():
     signal.signal(signal.SIGINT, sig_handler)
     signal.signal(signal.SIGTERM, sig_handler)
 
-    assistant.initialize()
+    assistant.initialize(skip_diagnostics=args.skip_diagnostics)
     assistant.run()
+
 
 if __name__ == "__main__":
     main()

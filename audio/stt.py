@@ -1,3 +1,4 @@
+import threading
 import time
 import numpy as np
 from typing import Optional
@@ -9,13 +10,19 @@ from core.utils import run_with_timeout
 log = get_logger("stt")
 
 
-def _normalize_peak(audio_float32: np.ndarray, target_dbfs: float = -6.0) -> np.ndarray:
+class STTBusyError(RuntimeError):
+    """A prior transcription is still running on the shared model."""
+
+
+def _normalize_peak(audio_float32: np.ndarray, target_dbfs: float = -6.0, min_peak: float = 0.01) -> np.ndarray:
     """Peak-normalize audio to a target dBFS level (default -6 dBFS) before STT.
-    No-op on silence or empty input."""
+
+    No-op for empty input, true silence, or signals whose peak is below `min_peak`:
+    amplifying near-silence only feeds noise to Whisper and causes hallucinations."""
     if audio_float32.size == 0:
         return audio_float32
     peak = float(np.max(np.abs(audio_float32)))
-    if peak <= 0.0:
+    if peak < min_peak:
         return audio_float32
     target_linear = 10 ** (target_dbfs / 20.0)
     return np.clip(audio_float32 * (target_linear / peak), -1.0, 1.0)
@@ -23,6 +30,7 @@ def _normalize_peak(audio_float32: np.ndarray, target_dbfs: float = -6.0) -> np.
 class STT:
     def __init__(self):
         self._model: Optional[WhisperModel] = None
+        self._run_lock = threading.Lock()
 
     def load(self):
         if self._model is not None:
@@ -41,35 +49,67 @@ class STT:
             log.error("whisper_load_failed", error=str(e))
             raise e
 
-    def transcribe(self, audio: np.ndarray) -> str:
+    def transcribe(self, audio: np.ndarray, language: Optional[str] = None) -> str:
         if self._model is None:
+            log.warning("stt_model_not_loaded", error_code="ERR_STT_EMPTY")
             return ""
 
         if len(audio) == 0:
             return ""
 
+        language = language or settings.STT_LANGUAGE
+
         audio_float32 = audio.astype(np.float32) / 32768.0
+
+        rms = float(np.sqrt(np.mean(audio_float32 ** 2))) if audio_float32.size else 0.0
+        if rms < settings.STT_MIN_RMS:
+            log.warning("stt_no_speech", rms=round(rms, 5), error_code="ERR_STT_EMPTY")
+            return ""
+
         audio_float32 = _normalize_peak(audio_float32)
 
         def _do_transcribe():
-            segments, info = self._model.transcribe(
-                audio_float32,
-                language="id",
-                vad_filter=False,
-            )
-            return " ".join([segment.text for segment in segments]).strip(), info
+            # CTranslate2 is not thread-safe. A previous transcription whose
+            # timeout fired may still be running, so refuse to touch the model
+            # concurrently instead of corrupting its state.
+            if not self._run_lock.acquire(blocking=False):
+                raise STTBusyError("transcription already in progress")
+            try:
+                segments, info = self._model.transcribe(
+                    audio_float32,
+                    language=language,
+                    vad_filter=False,
+                )
+                seg_list = list(segments)
+                text = " ".join([segment.text for segment in seg_list]).strip()
+                max_no_speech = 0.0
+                for segment in seg_list:
+                    value = getattr(segment, "no_speech_prob", None)
+                    if isinstance(value, (int, float)):
+                        max_no_speech = max(max_no_speech, float(value))
+                return text, info, max_no_speech
+            finally:
+                self._run_lock.release()
 
         start = time.perf_counter()
         try:
-            text, info = run_with_timeout(_do_transcribe, settings.STT_TIMEOUT_MS / 1000)
+            text, info, max_no_speech = run_with_timeout(_do_transcribe, settings.STT_TIMEOUT_MS / 1000)
             latency_ms = (time.perf_counter() - start) * 1000
 
-            if not text or info.language_probability < 0.3:
-                log.warning("stt_empty_or_low_prob", text=text, prob=round(info.language_probability, 2))
+            if max_no_speech > 0.8:
+                log.warning("stt_no_speech_prob", no_speech_prob=round(max_no_speech, 2), text=text)
                 return ""
 
-            log.info("stt_completed", stt_latency_ms=round(latency_ms, 1), text=text, prob=round(info.language_probability, 2))
+            lang_prob = getattr(info, "language_probability", 1.0)
+            if not text or lang_prob < 0.3:
+                log.warning("stt_empty_or_low_prob", text=text, prob=round(float(lang_prob), 2))
+                return ""
+
+            log.info("stt_completed", stt_latency_ms=round(latency_ms, 1), text=text, prob=round(float(lang_prob), 2))
             return text
+        except STTBusyError:
+            log.warning("stt_busy_skipped", error_code="ERR_STT_EMPTY")
+            return ""
         except TimeoutError:
             log.error("stt_timeout", error_code="ERR_STT_TIMEOUT", timeout_ms=settings.STT_TIMEOUT_MS)
             return ""

@@ -33,6 +33,10 @@ class StateMachine:
         return elapsed >= self._cooldown_sec
 
     def transition_to(self, new_state: AssistantState) -> bool:
+        if not isinstance(new_state, AssistantState):
+            log.warning("invalid_state_type", new_state=new_state)
+            return False
+
         old_state = self._state
 
         valid_transitions = {

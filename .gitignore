@@ -4,9 +4,7 @@
 .omo
 .pytest_cache
 .env
-flow.md
-note.md
-PRD.md
+!.env.example
 .venv/
 __pycache__/
 *.pyc

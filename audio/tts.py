@@ -47,12 +47,48 @@ def synthesize_edge(text: str) -> Optional[bytes]:
     log.error("tts_edge_failed", error_code="ERR_TTS_SYNTHESIS", timeout_sec=settings.TTS_EDGE_TIMEOUT_SEC)
     return None
 
+def _resolve_piper_model_path(voice: str) -> Optional[str]:
+    import shutil
+    from pathlib import Path
+
+    p = Path(voice)
+    if p.exists():
+        return str(p)
+    for base in [Path.home() / ".local/share/piper", Path("/usr/share/piper"), Path("models")]:
+        cand = base / f"{voice}.onnx"
+        if cand.exists():
+            return str(cand)
+        if (base / voice).exists():
+            return str(base / voice)
+    if shutil.which("piper") is None:
+        log.warning("piper_binary_missing")
+    return voice
+
+
+def _piper_sample_rate(model_path: str, default: int = 22050) -> int:
+    """Piper raw PCM carries no header; read the sample rate from the model's
+    sidecar `*.onnx.json` config, falling back to `default`."""
+    import json
+
+    try:
+        with open(f"{model_path}.json", "r", encoding="utf-8") as f:
+            return int(json.load(f).get("audio", {}).get("sample_rate", default))
+    except Exception:
+        return default
+
+
 def synthesize_piper(text: str) -> Optional[bytes]:
     import subprocess
+    import shutil
+
+    if shutil.which("piper") is None:
+        log.error("tts_piper_not_installed")
+        return None
+    model_path = _resolve_piper_model_path(settings.TTS_VOICE_PIPER)
     try:
         start = time.perf_counter()
         result = subprocess.run(
-            ["piper", "--model", settings.TTS_VOICE_PIPER, "--output-raw"],
+            ["piper", "--model", model_path, "--output-raw"],
             input=text.encode("utf-8"),
             capture_output=True,
             timeout=4.0,
@@ -62,27 +98,35 @@ def synthesize_piper(text: str) -> Optional[bytes]:
         if result.returncode == 0 and result.stdout:
             log.info("tts_piper_synthesized", tts_latency_ms=round(latency_ms, 1), size_bytes=len(result.stdout))
             return result.stdout
-        log.error("tts_piper_failed", returncode=result.returncode)
+        log.error("tts_piper_failed", returncode=result.returncode, stderr=result.stderr[:200].decode(errors="replace") if result.stderr else "")
         return None
     except Exception as e:
         log.error("tts_piper_failed", error=str(e))
         return None
 
-def play_audio_bytes(audio_bytes: bytes, is_raw_pcm: bool = False):
+
+def play_audio_bytes(audio_bytes: bytes, is_raw_pcm: bool = False, sample_rate: int = 22050):
+    import shutil
+    import subprocess
+
     try:
         if is_raw_pcm:
             samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-            sd.play(samples, samplerate=22050, blocking=True)
+            sd.play(samples, samplerate=sample_rate, blocking=True)
         else:
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=True) as f:
                 f.write(audio_bytes)
                 f.flush()
-                import subprocess
-                subprocess.run(
-                    ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", f.name],
-                    shell=False,
-                    timeout=15.0,
-                )
+                player = shutil.which("ffplay") or shutil.which("mpv") or shutil.which("aplay")
+                if player and "ffplay" in player:
+                    subprocess.run([player, "-nodisp", "-autoexit", "-loglevel", "quiet", f.name], shell=False, timeout=15.0)
+                elif player and "mpv" in player:
+                    subprocess.run([player, "--no-video", f.name], shell=False, timeout=15.0)
+                elif shutil.which("ffplay"):
+                    subprocess.run(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", f.name], shell=False, timeout=15.0)
+                else:
+                    log.warning("no_audio_player_found", fallback="console")
+                    print(f"[Elysia] (audio player missing, text): {f.name}")
     except Exception as e:
         log.error("audio_playback_failed", error=str(e))
 
@@ -100,14 +144,14 @@ def speak(text: str):
         log.warning("tts_fallback", from_provider="edge", to_provider="piper")
         audio = synthesize_piper(text)
         if audio:
-            play_audio_bytes(audio, is_raw_pcm=True)
+            play_audio_bytes(audio, is_raw_pcm=True, sample_rate=_piper_sample_rate(_resolve_piper_model_path(settings.TTS_VOICE_PIPER)))
             latency_ms = (time.perf_counter() - start) * 1000
             log.info("tts_playback_finished", provider="piper", total_tts_ms=round(latency_ms, 1))
             return
     else:
         audio = synthesize_piper(text)
         if audio:
-            play_audio_bytes(audio, is_raw_pcm=True)
+            play_audio_bytes(audio, is_raw_pcm=True, sample_rate=_piper_sample_rate(_resolve_piper_model_path(settings.TTS_VOICE_PIPER)))
             latency_ms = (time.perf_counter() - start) * 1000
             log.info("tts_playback_finished", provider="piper", total_tts_ms=round(latency_ms, 1))
             return

@@ -51,3 +51,17 @@ def test_is_retryable_skips_4xx_but_allows_429_and_5xx():
     assert _is_retryable(errors.ClientError(429, {"error": {"message": "rate"}})) is True
     assert _is_retryable(errors.ServerError(503, {"error": {"message": "busy"}})) is True
     assert _is_retryable(TimeoutError("t")) is True
+
+
+def test_piper_sample_rate_reads_model_config(tmp_path):
+    import json
+    from audio.tts import _piper_sample_rate
+    model = tmp_path / "voice.onnx"
+    model.write_bytes(b"stub")
+    (tmp_path / "voice.onnx.json").write_text(json.dumps({"audio": {"sample_rate": 16000}}))
+    assert _piper_sample_rate(str(model)) == 16000
+
+
+def test_piper_sample_rate_falls_back_when_config_missing(tmp_path):
+    from audio.tts import _piper_sample_rate
+    assert _piper_sample_rate(str(tmp_path / "missing.onnx")) == 22050

@@ -1,25 +1,48 @@
+import re
 from dataclasses import dataclass
 from typing import Optional
 from google.genai import types
 from execution.apps import resolve_app, is_destructive_action, resolve_destructive_action
-from execution.linux import safe_execute, safe_execute_blocking, ExecutionResult
+from execution.linux import safe_execute
 from core.logger import get_logger
 
 log = get_logger("tools")
 
-CANCEL_WORDS = {"tidak", "nggak", "enggak", "gak", "batal", "batalkan", "jangan", "no", "stop"}
-CONFIRM_WORDS = {"ya", "iya", "benar", "lanjut", "lanjutkan", "oke", "ok", "yes"}
+CANCEL_WORDS = {
+    "tidak", "tdk", "enggak", "engga", "nggak", "ngga", "gak", "ga", "gk",
+    "gausah", "batal", "batalkan", "jangan", "no", "stop", "cancel", "urungkan",
+}
+CONFIRM_WORDS = {
+    "ya", "yah", "yak", "yoi", "iya", "benar", "bener", "betul", "lanjut",
+    "lanjutkan", "oke", "ok", "okay", "okelah", "yes", "sip", "siap", "baik",
+    "baiklah", "boleh", "gas", "ayo", "setuju",
+}
+DENY_WORDS = {
+    "tidak", "tdk", "enggak", "engga", "nggak", "ngga", "gak", "ga", "gk",
+    "gausah", "udah", "sudah", "cukup", "selesai", "beres", "no", "stop",
+    "cancel", "batal",
+}
 
 
 def is_affirmation(text: str) -> bool:
     """Positive verbal confirmation for a destructive action. Anything else (including
-    negation like 'jangan ya') is treated as no-confirmation."""
-    words = set(text.strip().lower().replace(",", " ").replace(".", " ").split())
+    negation like 'jangan ya') is treated as no-confirmation. Words are matched exactly
+    after stripping punctuation so STT variants don't require fragile substring hacks."""
+    words = set(re.findall(r"\w+", text.lower()))
     if not words:
         return False
     if words & CANCEL_WORDS:
         return False
     return bool(words & CONFIRM_WORDS)
+
+
+def is_denial(text: str) -> bool:
+    """Negative answer to a yes/no question (e.g. 'tidak ada', 'sudah cukup').
+    An explicit confirmation word wins over a denial word ('ya, tidak' -> not denial)."""
+    words = set(re.findall(r"\w+", text.lower()))
+    if not words:
+        return False
+    return bool(words & DENY_WORDS) and not bool(words & CONFIRM_WORDS)
 
 @dataclass
 class ToolResponse:
@@ -93,7 +116,10 @@ def _handle_system_action(args: dict) -> ToolResponse:
 
 def execute_confirmed_action(argv: list[str], action: str) -> ToolResponse:
     log.info("destructive_confirmed", action=action, command=argv)
-    result = safe_execute_blocking(argv)
+    # Non-blocking on purpose: `lock screen` runs hyprlock in the foreground for
+    # as long as the screen stays locked, so a blocking wait with a timeout would
+    # kill the process and unlock the screen again.
+    result = safe_execute(argv)
     if result.success:
         return ToolResponse(text=f"Perintah {action} sedang dijalankan.")
     else:

@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from google.genai import types
-from agent.tools import handle_function_call, cancel_action, execute_confirmed_action, is_affirmation
+from agent.tools import handle_function_call, cancel_action, execute_confirmed_action, is_affirmation, is_denial
 
 @patch("agent.tools.safe_execute", return_value=MagicMock(success=True, message="opened"))
 def test_open_valid_app(mock_exec):
@@ -54,21 +54,44 @@ def test_cancel_action():
     assert "dibatalkan" in res.text.lower()
 
 def test_execute_confirmed_action_success():
-    with patch("agent.tools.safe_execute_blocking", return_value=MagicMock(success=True, message="ok")):
+    with patch("agent.tools.safe_execute", return_value=MagicMock(success=True, message="ok")):
         res = execute_confirmed_action(["systemctl", "poweroff"], "shutdown")
         assert "dijalankan" in res.text.lower() or "berhasil" in res.text.lower()
 
 def test_execute_confirmed_action_failed():
-    with patch("agent.tools.safe_execute_blocking", return_value=MagicMock(success=False, message="permission denied")):
+    with patch("agent.tools.safe_execute", return_value=MagicMock(success=False, message="permission denied")):
         res = execute_confirmed_action(["systemctl", "poweroff"], "shutdown")
         assert "Gagal" in res.text or "permission" in res.text.lower()
 
+def test_execute_confirmed_action_is_non_blocking():
+    # `lock screen` runs hyprlock foreground; it must use the non-blocking
+    # executor so no timeout can kill it and unlock the screen again.
+    with patch("agent.tools.safe_execute", return_value=MagicMock(success=True, message="ok")) as se:
+        execute_confirmed_action(["hyprlock"], "lock screen")
+        se.assert_called_once_with(["hyprlock"])
 
-@pytest.mark.parametrize("text", ["ya", "Ya", "iya", "oke", "lanjutkan", "benar", "yes", "ya, silakan"])
+
+@pytest.mark.parametrize("text", [
+    "ya", "Ya", "iya", "oke", "lanjutkan", "benar", "yes", "ya, silakan",
+    "yah", "sip", "okelah", "baiklah", "gas", "setuju", "betul.",
+])
 def test_is_affirmation_positive(text):
     assert is_affirmation(text) is True
 
 
-@pytest.mark.parametrize("text", ["tidak", "batal", "jangan ya", "nggak ya", "stop", "", "   ", "gaya rambut", "halo"])
+@pytest.mark.parametrize("text", [
+    "tidak", "batal", "jangan ya", "nggak ya", "stop", "", "   ",
+    "gaya rambut", "halo", "gausah", "gak usah", "baik tapi jangan",
+])
 def test_is_affirmation_negative(text):
     assert is_affirmation(text) is False
+
+
+@pytest.mark.parametrize("text", ["tidak", "gak", "nggak", "cukup", "selesai", "gausah", "stop", "sudah"])
+def test_is_denial_positive(text):
+    assert is_denial(text) is True
+
+
+@pytest.mark.parametrize("text", ["ya", "iya, buka spotify", "buka terminal", "", "   ", "ya tidak"])
+def test_is_denial_negative(text):
+    assert is_denial(text) is False
