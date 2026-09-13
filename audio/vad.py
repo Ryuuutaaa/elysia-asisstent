@@ -20,6 +20,8 @@ class SileroVAD:
         self._start_time = 0.0
         self._has_speech_started = False
         self._is_active = False
+        self._chunk_size = 512  # Silero VAD (16 kHz) requires exactly 512 samples per call
+        self._buffer = np.zeros(0, dtype=np.float32)
 
     def load(self):
         if self._model is not None:
@@ -48,6 +50,7 @@ class SileroVAD:
     def reset(self, max_record_ms: Optional[int] = None, no_speech_grace_ms: Optional[int] = None, threshold: Optional[float] = None):
         self._is_active = True
         self._has_speech_started = False
+        self._buffer = np.zeros(0, dtype=np.float32)
         self._last_speech_time = time.perf_counter()
         self._start_time = time.perf_counter()
         self._max_record_ms = max_record_ms if max_record_ms is not None else settings.VAD_MAX_RECORD_MS
@@ -94,25 +97,39 @@ class SileroVAD:
             # guard above still terminates the recording instead of hanging forever.
             return False
 
-        tensor = torch.from_numpy(frame.astype(np.float32) / 32768.0).unsqueeze(0)
-        try:
-            with torch.no_grad():
-                prob = self._model(tensor, self._sample_rate).item()
-        except Exception as e:
-            log.error("vad_process_error", error=str(e))
-            return False
+        # Silero needs exactly `_chunk_size` samples per call; sounddevice frames
+        # may differ, so accumulate into a buffer and consume fixed-size chunks.
+        self._buffer = np.concatenate(
+            [self._buffer, frame.astype(np.float32) / 32768.0]
+        )
 
-        if prob >= self._threshold:
-            self._has_speech_started = True
-            self._last_speech_time = now
+        while len(self._buffer) >= self._chunk_size:
+            chunk = self._buffer[: self._chunk_size]
+            self._buffer = self._buffer[self._chunk_size :]
+            tensor = torch.from_numpy(chunk).unsqueeze(0)
+            try:
+                with torch.no_grad():
+                    prob = self._model(tensor, self._sample_rate).item()
+            except Exception as e:
+                log.error("vad_process_error", error=str(e))
+                return False
 
-        # Don't cutoff silence until user has actually started speaking, or grace window passed
-        if not self._has_speech_started and elapsed_ms < self._no_speech_grace_ms:
-            return False
+            if prob >= self._threshold:
+                self._has_speech_started = True
+                self._last_speech_time = time.perf_counter()
 
-        silence_duration_ms = (now - self._last_speech_time) * 1000
-        if silence_duration_ms >= self._silence_threshold_ms:
-            log.info("vad_silence_detected", silence_ms=round(silence_duration_ms, 1))
-            return True
+            # Don't cutoff silence until user has started speaking, or grace passed
+            if not self._has_speech_started and elapsed_ms < self._no_speech_grace_ms:
+                continue
+
+            now = time.perf_counter()
+            silence_duration_ms = (now - self._last_speech_time) * 1000
+            if silence_duration_ms >= self._silence_threshold_ms:
+                log.info(
+                    "vad_silence_detected",
+                    silence_ms=round(silence_duration_ms, 1),
+                    vad_latency_ms=round((now - self._start_time) * 1000, 1),
+                )
+                return True
 
         return False

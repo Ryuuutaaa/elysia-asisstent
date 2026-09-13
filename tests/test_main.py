@@ -177,7 +177,7 @@ def test_followup_negative_ends_session(monkeypatch):
     assistant._handle_followup_answer("tidak")
 
     assert assistant._await_mode is None
-    assert spoken and "panggil aku" in spoken[0]
+    assert spoken and "panggil" in spoken[0]
 
 
 def test_followup_empty_ends_session(monkeypatch):
@@ -257,6 +257,53 @@ def test_suggestion_answer_denial_clears_suggestion(monkeypatch):
 
     assert assistant._last_suggestion is None
     assert spoken
+
+
+def test_settle_after_speech_uses_config(monkeypatch):
+    monkeypatch.setattr(settings, "SPEECH_COOLDOWN_SEC", 4.2)
+    sleeps = []
+    monkeypatch.setattr("main.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    ElysiaAssistant()._settle_after_speech()
+
+    assert sleeps == [4.2]
+
+
+def test_all_speech_paths_use_same_cooldown(monkeypatch):
+    monkeypatch.setattr(settings, "SPEECH_COOLDOWN_SEC", 3.0)
+    monkeypatch.setattr("main.speak", lambda text: None)
+    sleeps = []
+    monkeypatch.setattr("main.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    def prepared():
+        assistant = ElysiaAssistant()
+        assistant._recorder = MagicMock()
+        assistant._wake_word = MagicMock()
+        assistant._start_listening = MagicMock()
+        assistant._fsm.transition_to(AssistantState.LISTENING)
+        assistant._fsm.transition_to(AssistantState.PROCESSING)
+        return assistant
+
+    prepared()._speak_and_await("x", "followup_answer", 0.0)
+    prepared()._speak_and_idle("x")
+    prepared()._speak_and_listen("x")
+    prepared()._speak_and_listen_for_command()
+
+    assert sleeps == [3.0, 3.0, 3.0, 3.0]
+
+
+def test_end_session_message_mentions_openwakeword(monkeypatch):
+    monkeypatch.setattr(settings, "WAKE_WORD_ENGINE", "openwakeword")
+    monkeypatch.setattr(settings, "OPENWAKEWORD_MODEL_PATH", "")
+    monkeypatch.setattr(settings, "OPENWAKEWORD_MODEL", "hey_jarvis")
+
+    assert "hey jarvis" in ElysiaAssistant()._end_session_message().lower()
+
+
+def test_end_session_message_mentions_porcupine(monkeypatch):
+    monkeypatch.setattr(settings, "WAKE_WORD_ENGINE", "porcupine")
+
+    assert "jarvis" in ElysiaAssistant()._end_session_message().lower()
 
 
 def test_pipeline_routes_to_followup_handler(monkeypatch):

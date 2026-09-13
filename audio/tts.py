@@ -105,7 +105,7 @@ def synthesize_piper(text: str) -> Optional[bytes]:
         return None
 
 
-def play_audio_bytes(audio_bytes: bytes, is_raw_pcm: bool = False, sample_rate: int = 22050):
+def play_audio_bytes(audio_bytes: bytes, text: str = "", is_raw_pcm: bool = False, sample_rate: int = 22050):
     import shutil
     import subprocess
 
@@ -117,16 +117,18 @@ def play_audio_bytes(audio_bytes: bytes, is_raw_pcm: bool = False, sample_rate: 
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=True) as f:
                 f.write(audio_bytes)
                 f.flush()
-                player = shutil.which("ffplay") or shutil.which("mpv") or shutil.which("aplay")
+                player = shutil.which("ffplay") or shutil.which("mpv")
                 if player and "ffplay" in player:
                     subprocess.run([player, "-nodisp", "-autoexit", "-loglevel", "quiet", f.name], shell=False, timeout=15.0)
                 elif player and "mpv" in player:
                     subprocess.run([player, "--no-video", f.name], shell=False, timeout=15.0)
+                elif shutil.which("mpv"):
+                    subprocess.run(["mpv", "--no-video", f.name], shell=False, timeout=15.0)
                 elif shutil.which("ffplay"):
                     subprocess.run(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", f.name], shell=False, timeout=15.0)
                 else:
                     log.warning("no_audio_player_found", fallback="console")
-                    print(f"[Elysia] (audio player missing, text): {f.name}")
+                    print(f"[Elysia] {text}" if text else f"[Elysia] (audio player missing): {f.name}")
     except Exception as e:
         log.error("audio_playback_failed", error=str(e))
 
@@ -136,7 +138,7 @@ def speak(text: str):
     if settings.TTS_PROVIDER_DEFAULT == "edge":
         audio = synthesize_edge(text)
         if audio:
-            play_audio_bytes(audio, is_raw_pcm=False)
+            play_audio_bytes(audio, text=text, is_raw_pcm=False)
             latency_ms = (time.perf_counter() - start) * 1000
             log.info("tts_playback_finished", provider="edge", total_tts_ms=round(latency_ms, 1))
             return
@@ -144,14 +146,14 @@ def speak(text: str):
         log.warning("tts_fallback", from_provider="edge", to_provider="piper")
         audio = synthesize_piper(text)
         if audio:
-            play_audio_bytes(audio, is_raw_pcm=True, sample_rate=_piper_sample_rate(_resolve_piper_model_path(settings.TTS_VOICE_PIPER)))
+            play_audio_bytes(audio, text=text, is_raw_pcm=True, sample_rate=_piper_sample_rate(_resolve_piper_model_path(settings.TTS_VOICE_PIPER)))
             latency_ms = (time.perf_counter() - start) * 1000
             log.info("tts_playback_finished", provider="piper", total_tts_ms=round(latency_ms, 1))
             return
     else:
         audio = synthesize_piper(text)
         if audio:
-            play_audio_bytes(audio, is_raw_pcm=True, sample_rate=_piper_sample_rate(_resolve_piper_model_path(settings.TTS_VOICE_PIPER)))
+            play_audio_bytes(audio, text=text, is_raw_pcm=True, sample_rate=_piper_sample_rate(_resolve_piper_model_path(settings.TTS_VOICE_PIPER)))
             latency_ms = (time.perf_counter() - start) * 1000
             log.info("tts_playback_finished", provider="piper", total_tts_ms=round(latency_ms, 1))
             return
@@ -159,7 +161,7 @@ def speak(text: str):
         log.warning("tts_fallback", from_provider="piper", to_provider="edge")
         audio = synthesize_edge(text)
         if audio:
-            play_audio_bytes(audio, is_raw_pcm=False)
+            play_audio_bytes(audio, text=text, is_raw_pcm=False)
             latency_ms = (time.perf_counter() - start) * 1000
             log.info("tts_playback_finished", provider="edge", total_tts_ms=round(latency_ms, 1))
             return

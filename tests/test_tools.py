@@ -110,12 +110,19 @@ def test_is_denial_negative(text):
     ("iya silakan", "yes"),
     ("tidak", "no"),
     ("sudah cukup", "no"),
+    ("tidak, terima kasih", "no"),
+    ("tidak ada lagi", "no"),
+    ("sudah, terima kasih", "no"),
+    ("enggak usah makasih", "no"),
     ("", "no"),
     ("   ", "no"),
     ("oke buka spotify", "command"),
     ("buka terminal", "command"),
     ("iya, buka terminal", "command"),
     ("sudah, buka spotify", "command"),
+    ("tidak, putar musik", "command"),
+    ("enggak, cari resep", "command"),
+    ("tidak, nyalakan lampu", "command"),
 ])
 def test_classify_followup(text, expected):
     assert classify_followup(text) == expected

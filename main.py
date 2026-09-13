@@ -320,10 +320,7 @@ class ElysiaAssistant:
             # Keep the mic muted through the cooldown: the prompt itself says
             # "Jawab 'ya' untuk konfirmasi", so its echo/reverb must not be
             # captured as a positive confirmation of a destructive action.
-            try:
-                time.sleep(settings.COOLDOWN_SEC)
-            except Exception:
-                pass
+            self._settle_after_speech()
             try:
                 self._recorder.unmute()
             except Exception as e:
@@ -368,10 +365,7 @@ class ElysiaAssistant:
                     total_e2e_latency_ms=round(e2e_ms, 1),
                     session_id=self._session_id,
                 )
-            try:
-                time.sleep(settings.COOLDOWN_SEC)
-            except Exception:
-                pass
+            self._settle_after_speech()
             try:
                 self._recorder.unmute()
             except Exception as e:
@@ -405,7 +399,7 @@ class ElysiaAssistant:
 
         if intent == "no":
             log.info("session_ended", reason="no_followup")
-            self._speak_and_idle("Baik, panggil aku kalau butuh lagi.")
+            self._speak_and_idle(self._end_session_message())
             return
 
         if intent == "yes":
@@ -442,10 +436,7 @@ class ElysiaAssistant:
         try:
             speak("Silakan.")
         finally:
-            try:
-                time.sleep(settings.COOLDOWN_SEC)
-            except Exception:
-                pass
+            self._settle_after_speech()
             try:
                 self._recorder.unmute()
             except Exception as e:
@@ -461,6 +452,28 @@ class ElysiaAssistant:
             if not self._fsm.transition_to(AssistantState.IDLE):
                 self._fsm.reset_to_idle("followup_command_fallback")
             self._wake_word.resume()
+
+    def _settle_after_speech(self):
+        """Keep the mic muted briefly after TTS so echo/reverb is not captured."""
+        try:
+            time.sleep(settings.SPEECH_COOLDOWN_SEC)
+        except Exception:
+            pass
+
+    def _wake_word_name(self) -> str:
+        if settings.WAKE_WORD_ENGINE == "porcupine":
+            return "jarvis"
+        name = settings.OPENWAKEWORD_MODEL_PATH or settings.OPENWAKEWORD_MODEL
+        if not name:
+            return ""
+        stem = name.rsplit("/", 1)[-1].split(".", 1)[0]
+        return stem.replace("_", " ").strip()
+
+    def _end_session_message(self) -> str:
+        name = self._wake_word_name()
+        if name:
+            return f"Baik, panggil '{name}' kalau butuh lagi."
+        return "Baik, panggil aku kalau butuh lagi."
 
     def _speak_and_idle(self, text: str, start_e2e: float = 0.0):
         self._await_mode = None
@@ -482,11 +495,7 @@ class ElysiaAssistant:
                     session_id=self._session_id,
                 )
 
-            cooldown = max(settings.COOLDOWN_SEC, 3.0)
-            try:
-                time.sleep(cooldown)
-            except Exception:
-                pass
+            self._settle_after_speech()
             try:
                 self._recorder.unmute()
             except Exception as e:

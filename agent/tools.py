@@ -45,22 +45,29 @@ def is_denial(text: str) -> bool:
     return bool(words & DENY_WORDS) and not bool(words & CONFIRM_WORDS)
 
 
+FOLLOWUP_FILLER = {
+    "tolong", "silakan", "mohon", "coba", "saja", "aja", "dong", "deh", "lah",
+    "nih", "sih", "kok", "terima", "kasih", "makasih", "thanks", "thank",
+    "please", "ada", "lagi", "usah", "perlu", "dulu", "sekarang",
+}
+
+
 def classify_followup(text: str) -> str:
     """Classify a reply to 'Ada perintah lain?'. Returns 'yes', 'no', or 'command'.
 
-    Only a bare answer (at most two tokens, e.g. 'iya', 'tidak usah') counts as
-    yes/no. A longer utterance is treated as the next command, so 'oke buka
-    spotify' runs the command instead of being swallowed as a plain 'yes'."""
-    words = re.findall(r"\w+", text.lower())
+    A reply counts as yes/no only when nothing is left after removing the yes/no
+    words and filler ('iya', 'tidak, terima kasih'). Any leftover content word
+    means it is the next command ('oke buka spotify', 'tidak, putar musik')."""
+    words = set(re.findall(r"\w+", text.lower()))
     if not words:
         return "no"
-    word_set = set(words)
-    if len(words) <= 2:
-        if word_set & CONFIRM_WORDS:
-            return "yes"
-        if word_set & DENY_WORDS:
-            return "no"
-    return "command"
+    if words - CONFIRM_WORDS - DENY_WORDS - FOLLOWUP_FILLER:
+        return "command"
+    if words & CONFIRM_WORDS:
+        return "yes"
+    if words & DENY_WORDS:
+        return "no"
+    return "no"
 
 @dataclass
 class ToolResponse:

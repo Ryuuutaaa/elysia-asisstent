@@ -165,8 +165,8 @@ class AudioRecorder:
         if status:
             log.warning("audio_callback_status", status=str(status))
         frame = indata[:, 0].copy()
-        if self._recording:
-            with self._lock:
+        with self._lock:
+            if self._recording:
                 self._buffer.append(frame)
         if self._on_frame:
             try:
@@ -198,12 +198,12 @@ class AudioRecorder:
     def start_recording(self):
         with self._lock:
             self._buffer.clear()
-        self._recording = True
+            self._recording = True
         log.info("recording_started")
 
     def stop_recording(self) -> np.ndarray:
-        self._recording = False
         with self._lock:
+            self._recording = False
             if not self._buffer:
                 return np.array([], dtype=np.int16)
             audio = np.concatenate(self._buffer)

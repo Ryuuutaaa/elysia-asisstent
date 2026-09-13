@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     COOLDOWN_SEC: float = Field(default=2.0, ge=0.5, le=10.0)
     CONFIRMATION_TIMEOUT_SEC: float = Field(default=5.0, ge=1.0, le=30.0)
     FOLLOWUP_TIMEOUT_SEC: float = Field(default=5.0, ge=1.0, le=30.0)
+    SPEECH_COOLDOWN_SEC: float = Field(default=3.0, ge=0.5, le=10.0, description="Jeda setelah TTS sebelum mic di-unmute (anti-echo)")
     WHISPER_MODEL_SIZE: Literal["tiny", "base", "small", "medium", "large-v3"] = Field(default="small")
     WHISPER_DEVICE: Literal["cpu", "cuda"] = Field(default="cpu")
     WHISPER_COMPUTE_TYPE: Literal["int8", "int8_float16", "float16", "float32"] = Field(default="int8")

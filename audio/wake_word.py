@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -23,6 +24,7 @@ class PorcupineWakeWord:
         self._on_wake: Optional[Callable[[], None]] = None
         self._rolling_buffer = np.zeros(0, dtype=np.int16)
         self._target_frame_size = 1280
+        self._lock = threading.Lock()
 
     def set_on_wake(self, callback: Callable[[], None]):
         self._on_wake = callback
@@ -127,36 +129,48 @@ class PorcupineWakeWord:
         start = time.perf_counter()
 
         if self._engine == "openwakeword" and self._openwakeword_model is not None:
+            detected = None
             try:
-                self._rolling_buffer = np.concatenate(
-                    [self._rolling_buffer, frame.astype(np.int16)]
-                )
-                # Consume the buffer in fixed 1280-sample windows (the size the
-                # model expects) instead of letting it grow unbounded, and feed
-                # predict() the window rather than the raw 512-sample frame.
-                while len(self._rolling_buffer) >= self._target_frame_size:
-                    chunk = self._rolling_buffer[: self._target_frame_size]
-                    self._rolling_buffer = self._rolling_buffer[self._target_frame_size :]
-                    prediction = self._openwakeword_model.predict(chunk)
-                    for model_name, score in prediction.items():
-                        if score >= 0.30:
-                            latency_ms = (time.perf_counter() - start) * 1000
-                            log.info(
-                                "wake_word_detected",
-                                engine="openwakeword",
-                                model=model_name,
-                                score=round(float(score), 2),
-                                latency_ms=round(latency_ms, 1),
-                            )
-                            self._rolling_buffer = np.zeros(0, dtype=np.int16)
-                            if self._on_wake:
-                                try:
-                                    self._on_wake()
-                                except Exception as e:
-                                    log.error("on_wake_callback_error", error=str(e))
-                            return True
+                with self._lock:
+                    self._rolling_buffer = np.concatenate(
+                        [self._rolling_buffer, frame.astype(np.int16)]
+                    )
+                    # Consume the buffer in fixed 1280-sample windows (the size the
+                    # model expects) instead of letting it grow unbounded, and feed
+                    # predict() the window rather than the raw 512-sample frame.
+                    while len(self._rolling_buffer) >= self._target_frame_size:
+                        chunk = self._rolling_buffer[: self._target_frame_size]
+                        self._rolling_buffer = self._rolling_buffer[self._target_frame_size :]
+                        prediction = self._openwakeword_model.predict(chunk)
+                        for model_name, score in prediction.items():
+                            if score >= 0.30:
+                                detected = (model_name, float(score))
+                                self._rolling_buffer = np.zeros(0, dtype=np.int16)
+                                break
+                        if detected:
+                            break
             except Exception as e:
                 log.error("openwakeword_process_error", error=str(e))
+                return False
+
+            if detected is not None:
+                model_name, score = detected
+                latency_ms = (time.perf_counter() - start) * 1000
+                log.info(
+                    "wake_word_detected",
+                    engine="openwakeword",
+                    model=model_name,
+                    score=round(score, 2),
+                    latency_ms=round(latency_ms, 1),
+                )
+                # Invoke the callback outside the lock: it drives the FSM / pauses
+                # the engine and must not run while the buffer lock is held.
+                if self._on_wake:
+                    try:
+                        self._on_wake()
+                    except Exception as e:
+                        log.error("on_wake_callback_error", error=str(e))
+                return True
             return False
 
         if self._engine == "porcupine" and self._porcupine is not None:
@@ -192,6 +206,7 @@ class PorcupineWakeWord:
 
     def reset(self):
         """Clear rolling buffer and re-arm after TTS playback."""
-        self._rolling_buffer = np.zeros(0, dtype=np.int16)
+        with self._lock:
+            self._rolling_buffer = np.zeros(0, dtype=np.int16)
         self._paused = False
         log.info("wake_word_reset")
