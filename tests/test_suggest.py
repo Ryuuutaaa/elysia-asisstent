@@ -45,7 +45,7 @@ def test_cache_roundtrip():
     assert get_cached_suggestion("breif") == (True, "brave browser")
 
 
-def test_cache_remembers_none():
+def test_cache_stores_definitive_none():
     clear_suggestion_cache()
     set_cached_suggestion("zzz", None)
     assert get_cached_suggestion("zzz") == (True, None)
@@ -54,20 +54,41 @@ def test_cache_remembers_none():
 def test_choose_app_returns_validated_candidate(monkeypatch):
     monkeypatch.setattr("agent.llm._plain_generate", lambda prompt: object())
     monkeypatch.setattr("agent.llm.extract_text", lambda resp: "brave browser")
-    assert choose_app("breif") == "brave browser"
+    assert choose_app("breif") == ("found", "brave browser")
 
 
 def test_choose_app_rejects_unknown(monkeypatch):
     monkeypatch.setattr("agent.llm._plain_generate", lambda prompt: object())
     monkeypatch.setattr("agent.llm.extract_text", lambda resp: "some random thing")
-    assert choose_app("breif") is None
+    assert choose_app("breif") == ("none", None)
 
 
 def test_choose_app_none_answer(monkeypatch):
     monkeypatch.setattr("agent.llm._plain_generate", lambda prompt: object())
     monkeypatch.setattr("agent.llm.extract_text", lambda resp: "NONE")
-    assert choose_app("breif") is None
+    assert choose_app("breif") == ("none", None)
+
+
+def test_choose_app_transient_error(monkeypatch):
+    def boom(prompt):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr("agent.llm._plain_generate", boom)
+    assert choose_app("breif") == ("error", None)
+
+
+def test_choose_app_includes_user_context(monkeypatch):
+    captured = {}
+
+    def capture(prompt):
+        captured["prompt"] = prompt
+        return object()
+
+    monkeypatch.setattr("agent.llm._plain_generate", capture)
+    monkeypatch.setattr("agent.llm.extract_text", lambda resp: "NONE")
+    choose_app("breif", source_text="buka breif dong")
+    assert "buka breif dong" in captured["prompt"]
 
 
 def test_choose_app_empty_raw():
-    assert choose_app("") is None
+    assert choose_app("") == ("none", None)

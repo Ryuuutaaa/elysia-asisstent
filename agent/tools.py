@@ -6,6 +6,7 @@ from execution.apps import (
     APP_REGISTRY,
     get_cached_suggestion,
     is_destructive_action,
+    norm_for_match,
     normalize_app_name,
     resolve_app,
     resolve_destructive_action,
@@ -104,12 +105,14 @@ def handle_function_call(fn_call: types.FunctionCall, source_text: str = "") -> 
 
 def _app_name_present(app_name: str, source_text: str) -> bool:
     """True when `app_name` is a registry key AND actually appears in what the
-    user said. Prevents an LLM-side 'correction' from being treated as exact."""
+    user said. Both sides are normalized the same way as `suggest_app`. Prevents
+    an LLM-side 'correction' from being treated as exact."""
     key = normalize_app_name(app_name)
     if key not in APP_REGISTRY:
         return False
-    text = re.sub(r"[^\w\s]", " ", (source_text or "").lower())
-    return re.search(rf"(?<!\w){re.escape(key)}(?!\w)", text) is not None
+    text = norm_for_match(source_text)
+    norm_key = norm_for_match(key)
+    return re.search(rf"(?<!\w){re.escape(norm_key)}(?!\w)", text) is not None
 
 
 def _handle_open_application(args: dict, source_text: str = "") -> ToolResponse:
@@ -132,13 +135,21 @@ def _handle_open_application(args: dict, source_text: str = "") -> ToolResponse:
     if not found:
         candidate = suggest_app(app_name)
         source = "fuzzy"
-        if candidate is None:
-            candidate = choose_app(app_name)
-            source = "llm"
-        set_cached_suggestion(app_name, candidate)
+        if candidate is not None:
+            set_cached_suggestion(app_name, candidate)  # fuzzy hit is definitive
+        else:
+            status, candidate = choose_app(app_name, source_text)
+            if status == "found":
+                source = "llm"
+                set_cached_suggestion(app_name, candidate)
+            elif status == "none":
+                source = "llm-none"
+                set_cached_suggestion(app_name, None)  # definitive -> cache
+            else:  # "error" is transient -> leave uncached so we retry next time
+                source = "llm-error"
 
     if candidate is None:
-        log.info("app_suggestion_none", raw=app_name)
+        log.info("app_suggestion_none", raw=app_name, source=source)
         return ToolResponse(text=f"Maaf, Elysia belum mengenali '{app_name}'. Coba sebut ulang.")
 
     argv = resolve_app(candidate)

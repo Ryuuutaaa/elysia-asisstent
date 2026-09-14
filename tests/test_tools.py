@@ -18,7 +18,7 @@ def test_open_valid_app(mock_exec):
     assert res.needs_confirmation is False
 
 def test_open_app_not_in_allowlist(monkeypatch):
-    monkeypatch.setattr("agent.tools.choose_app", lambda raw: None)
+    monkeypatch.setattr("agent.tools.choose_app", lambda raw, source_text="": ("none", None))
     fc = types.FunctionCall(name="open_application", args={"app_name": "hacker xyz"})
     res = handle_function_call(fc)
     assert "belum mengenali" in res.text
@@ -153,3 +153,47 @@ def test_is_denial_negative(text):
 ])
 def test_classify_followup(text, expected):
     assert classify_followup(text) == expected
+
+
+def test_token_guard_tolerates_punctuation():
+    from agent.tools import _app_name_present
+
+    assert _app_name_present("brave browser", "buka brave, browser") is True
+    assert _app_name_present("brave browser", "Buka  BRAVE   Browser") is True
+    assert _app_name_present("brave browser", "buka breif") is False
+
+
+def test_transient_llm_error_is_retried_not_cached(monkeypatch):
+    monkeypatch.setattr("agent.tools.suggest_app", lambda raw: None)
+    calls = {"n": 0}
+
+    def flaky(raw, source_text=""):
+        calls["n"] += 1
+        return ("error", None) if calls["n"] == 1 else ("found", "brave browser")
+
+    monkeypatch.setattr("agent.tools.choose_app", flaky)
+    fc = types.FunctionCall(name="open_application", args={"app_name": "breif"})
+
+    first = handle_function_call(fc, source_text="buka breif")
+    second = handle_function_call(fc, source_text="buka breif")
+
+    assert first.kind is None
+    assert second.kind == "app_suggestion"
+    assert calls["n"] == 2
+
+
+def test_definitive_none_is_cached(monkeypatch):
+    monkeypatch.setattr("agent.tools.suggest_app", lambda raw: None)
+    calls = {"n": 0}
+
+    def once(raw, source_text=""):
+        calls["n"] += 1
+        return ("none", None)
+
+    monkeypatch.setattr("agent.tools.choose_app", once)
+    fc = types.FunctionCall(name="open_application", args={"app_name": "hacker xyz"})
+
+    handle_function_call(fc, source_text="buka hacker xyz")
+    handle_function_call(fc, source_text="buka hacker xyz")
+
+    assert calls["n"] == 1

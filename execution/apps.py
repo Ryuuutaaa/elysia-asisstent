@@ -71,7 +71,7 @@ _TOP_ACCEPT = 0.75
 _MARGIN_ACCEPT = 0.10
 
 
-def _norm_for_match(text: Optional[str]) -> str:
+def norm_for_match(text: Optional[str]) -> str:
     cleaned = re.sub(r"[^\w\s]", " ", (text or "").lower())
     return re.sub(r"\s+", " ", cleaned).strip()
 
@@ -82,7 +82,7 @@ def suggest_app(raw_name: str, cutoff: float = _DEFAULT_CUTOFF) -> Optional[str]
     Accepts the top candidate only when it is clearly the best: either a high
     absolute ratio (>= 0.75) or a clear margin (>= 0.10) over the runner-up.
     Otherwise returns None so the caller can ask the LLM instead of guessing."""
-    norm = _norm_for_match(raw_name)
+    norm = norm_for_match(raw_name)
     if not norm:
         return None
     matches = difflib.get_close_matches(norm, list(APP_REGISTRY.keys()), n=2, cutoff=cutoff)
@@ -103,26 +103,26 @@ def suggest_app(raw_name: str, cutoff: float = _DEFAULT_CUTOFF) -> Optional[str]
 def extract_app_keys(text: str) -> list[str]:
     """Registry keys mentioned in `text` as whole phrases (longest first, then
     by position). Used to catch 'bukan brave, firefox' → ['firefox', ...]."""
-    norm = _norm_for_match(text)
+    norm = norm_for_match(text)
     if not norm:
         return []
     found = [
         key
         for key in APP_REGISTRY
-        if re.search(rf"(?<!\w){re.escape(_norm_for_match(key))}(?!\w)", norm)
+        if re.search(rf"(?<!\w){re.escape(norm_for_match(key))}(?!\w)", norm)
     ]
-    found.sort(key=lambda k: (-len(k), norm.find(_norm_for_match(k))))
+    found.sort(key=lambda k: (-len(k), norm.find(norm_for_match(k))))
     return found
 
 
-# --- Session cache: raw name -> chosen candidate (or None = "none found") -----
+# --- Session cache: raw name -> candidate (None = definitively no match) ------
 
 _SUGGEST_CACHE: "OrderedDict[str, Optional[str]]" = OrderedDict()
 _SUGGEST_CACHE_MAX = 100
 
 
 def get_cached_suggestion(raw_name: str) -> tuple[bool, Optional[str]]:
-    key = _norm_for_match(raw_name)
+    key = norm_for_match(raw_name)
     if key and key in _SUGGEST_CACHE:
         _SUGGEST_CACHE.move_to_end(key)
         return True, _SUGGEST_CACHE[key]
@@ -130,7 +130,10 @@ def get_cached_suggestion(raw_name: str) -> tuple[bool, Optional[str]]:
 
 
 def set_cached_suggestion(raw_name: str, candidate: Optional[str]) -> None:
-    key = _norm_for_match(raw_name)
+    """Cache a result. `candidate=None` is valid and means "definitively no match".
+    Only cache None for definitive answers (LLM said NONE / unknown), never for
+    transient failures — those must be retried."""
+    key = norm_for_match(raw_name)
     if not key:
         return
     _SUGGEST_CACHE[key] = candidate

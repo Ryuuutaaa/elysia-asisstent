@@ -191,19 +191,27 @@ def extract_text(response: types.GenerateContentResponse) -> str:
     return " ".join(parts).strip()
 
 
-def choose_app(raw_name: str) -> Optional[str]:
+def choose_app(raw_name: str, source_text: str = "") -> tuple[str, Optional[str]]:
     """Ask the LLM to pick the most likely allowlist entry for a misheard name.
 
-    Only a fallback for when deterministic fuzzy matching is unsure. The answer
-    is always validated against the registry (never trusted blindly)."""
-    from execution.apps import list_allowed_apps, resolve_app, suggest_app
+    Fallback for when deterministic fuzzy matching is unsure. Returns
+    ``(status, candidate)`` where status is:
+
+    - ``"found"`` -> candidate is a valid registry key
+    - ``"none"``  -> definitive "no match" (safe to cache)
+    - ``"error"`` -> transient failure (timeout/network); must NOT be cached
+
+    The candidate is always validated against the registry, never trusted blindly."""
+    from execution.apps import list_allowed_apps, resolve_app
 
     raw = (raw_name or "").strip()
     if not raw:
-        return None
+        return "none", None
     names = list_allowed_apps()
+    heard = (source_text or "").strip() or raw
     prompt = (
-        f"User menyebut nama aplikasi (mungkin salah dengar atau typo): {raw!r}.\n"
+        f"User mengucapkan: {heard!r}.\n"
+        f"Kata aplikasi yang tertangkap: {raw!r} (mungkin salah dengar atau typo).\n"
         f"Daftar aplikasi yang tersedia: {', '.join(names)}.\n"
         "Pilih SATU nama dari daftar yang paling mungkin maksudnya. "
         "Jawab HANYA nama tersebut, atau NONE bila tidak ada yang cocok."
@@ -214,11 +222,11 @@ def choose_app(raw_name: str) -> Optional[str]:
         )
     except Exception as e:
         log.warning("choose_app_failed", error=str(e))
-        return None
+        return "error", None
 
     answer = extract_text(response).strip().strip("\"'").lower()
     if not answer or answer == "none":
-        return None
+        return "none", None
     if resolve_app(answer) is not None:
-        return answer
-    return suggest_app(answer)
+        return "found", answer
+    return "none", None
