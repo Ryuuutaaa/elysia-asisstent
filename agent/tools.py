@@ -2,8 +2,18 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 from google.genai import types
-from execution.apps import resolve_app, is_destructive_action, resolve_destructive_action
+from execution.apps import (
+    APP_REGISTRY,
+    get_cached_suggestion,
+    is_destructive_action,
+    normalize_app_name,
+    resolve_app,
+    resolve_destructive_action,
+    set_cached_suggestion,
+    suggest_app,
+)
 from execution.linux import safe_execute
+from agent.llm import choose_app
 from core.logger import get_logger
 
 log = get_logger("tools")
@@ -20,7 +30,7 @@ CONFIRM_WORDS = {
 DENY_WORDS = {
     "tidak", "tdk", "enggak", "engga", "nggak", "ngga", "gak", "ga", "gk",
     "gausah", "udah", "sudah", "cukup", "selesai", "beres", "no", "stop",
-    "cancel", "batal",
+    "cancel", "batal", "bukan",
 }
 
 
@@ -75,36 +85,77 @@ class ToolResponse:
     needs_confirmation: bool = False
     pending_action: Optional[str] = None
     pending_argv: Optional[list[str]] = None
+    kind: Optional[str] = None
+    raw: str = ""
+    source: str = ""
 
-def handle_function_call(fn_call: types.FunctionCall) -> ToolResponse:
+def handle_function_call(fn_call: types.FunctionCall, source_text: str = "") -> ToolResponse:
     name = fn_call.name
     args = dict(fn_call.args) if fn_call.args else {}
 
     if name == "open_application":
-        return _handle_open_application(args)
+        return _handle_open_application(args, source_text)
     elif name == "system_action":
         return _handle_system_action(args)
     else:
         log.warning("unknown_tool_called", tool_name=name, args=args)
         return ToolResponse(text=f"Maaf, tool {name} tidak dikenali.")
 
-def _handle_open_application(args: dict) -> ToolResponse:
+
+def _app_name_present(app_name: str, source_text: str) -> bool:
+    """True when `app_name` is a registry key AND actually appears in what the
+    user said. Prevents an LLM-side 'correction' from being treated as exact."""
+    key = normalize_app_name(app_name)
+    if key not in APP_REGISTRY:
+        return False
+    text = re.sub(r"[^\w\s]", " ", (source_text or "").lower())
+    return re.search(rf"(?<!\w){re.escape(key)}(?!\w)", text) is not None
+
+
+def _handle_open_application(args: dict, source_text: str = "") -> ToolResponse:
     app_name = args.get("app_name", "")
-    if not app_name:
+    if not isinstance(app_name, str) or not app_name.strip():
         return ToolResponse(text="Maaf, nama aplikasi tidak diberikan.")
 
-    argv = resolve_app(app_name)
+    # Exact match — but only trust it when the user really said that name.
+    if not source_text or _app_name_present(app_name, source_text):
+        argv = resolve_app(app_name)
+        if argv is not None:
+            result = safe_execute(argv)
+            if result.success:
+                return ToolResponse(text=f"{app_name.title()} sudah dibuka.")
+            return ToolResponse(text=f"Gagal membuka {app_name}: {result.message}")
+
+    # Otherwise treat it as a misheard/typo'd name: cached -> fuzzy -> LLM.
+    found, candidate = get_cached_suggestion(app_name)
+    source = "cache"
+    if not found:
+        candidate = suggest_app(app_name)
+        source = "fuzzy"
+        if candidate is None:
+            candidate = choose_app(app_name)
+            source = "llm"
+        set_cached_suggestion(app_name, candidate)
+
+    if candidate is None:
+        log.info("app_suggestion_none", raw=app_name)
+        return ToolResponse(text=f"Maaf, Elysia belum mengenali '{app_name}'. Coba sebut ulang.")
+
+    argv = resolve_app(candidate)
     if argv is None:
         log.warning("tool_rejected", error_code="ERR_TOOL_NOT_ALLOWED", requested=app_name)
-        return ToolResponse(
-            text=f"Maaf, aplikasi {app_name} tidak ada dalam daftar yang diizinkan."
-        )
+        return ToolResponse(text=f"Maaf, aplikasi {app_name} tidak ada dalam daftar yang diizinkan.")
 
-    result = safe_execute(argv)
-    if result.success:
-        return ToolResponse(text=f"{app_name.title()} sudah dibuka.")
-    else:
-        return ToolResponse(text=f"Gagal membuka {app_name}: {result.message}")
+    log.info("debug_suggestion", raw=app_name, candidate=candidate, source=source)
+    return ToolResponse(
+        text=f"Maksudmu '{candidate}'?",
+        needs_confirmation=True,
+        pending_action=candidate,
+        pending_argv=argv,
+        kind="app_suggestion",
+        raw=app_name,
+        source=source,
+    )
 
 def _handle_system_action(args: dict) -> ToolResponse:
     action = args.get("action", "")
@@ -137,6 +188,7 @@ def _handle_system_action(args: dict) -> ToolResponse:
         needs_confirmation=True,
         pending_action=action,
         pending_argv=argv,
+        kind="destructive",
     )
 
 def execute_confirmed_action(argv: list[str], action: str) -> ToolResponse:

@@ -17,11 +17,38 @@ def test_open_valid_app(mock_exec):
     assert "dibuka" in res.text.lower()
     assert res.needs_confirmation is False
 
-def test_open_app_not_in_allowlist():
+def test_open_app_not_in_allowlist(monkeypatch):
+    monkeypatch.setattr("agent.tools.choose_app", lambda raw: None)
     fc = types.FunctionCall(name="open_application", args={"app_name": "hacker xyz"})
     res = handle_function_call(fc)
-    assert "tidak ada dalam daftar" in res.text
+    assert "belum mengenali" in res.text
     assert res.needs_confirmation is False
+
+
+def test_open_typo_offers_confirmation(monkeypatch):
+    monkeypatch.setattr("agent.tools.suggest_app", lambda raw: "brave browser")
+    fc = types.FunctionCall(name="open_application", args={"app_name": "breif"})
+    res = handle_function_call(fc, source_text="buka breif")
+    assert res.kind == "app_suggestion"
+    assert res.needs_confirmation is True
+    assert "brave browser" in res.text
+    assert res.pending_argv == ["brave-browser"]
+
+
+def test_exact_name_not_in_speech_becomes_candidate():
+    # The LLM may 'correct' the name, but if the user never said it we confirm.
+    fc = types.FunctionCall(name="open_application", args={"app_name": "brave browser"})
+    res = handle_function_call(fc, source_text="buka breif")
+    assert res.kind == "app_suggestion"
+    assert res.needs_confirmation is True
+
+
+@patch("agent.tools.safe_execute", return_value=MagicMock(success=True, message="ok"))
+def test_exact_name_in_speech_opens_directly(mock_exec):
+    fc = types.FunctionCall(name="open_application", args={"app_name": "brave browser"})
+    res = handle_function_call(fc, source_text="buka brave browser")
+    assert res.kind is None
+    assert "dibuka" in res.text.lower()
 
 def test_open_empty_app_name():
     fc = types.FunctionCall(name="open_application", args={"app_name": ""})

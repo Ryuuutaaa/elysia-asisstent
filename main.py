@@ -24,7 +24,7 @@ from audio.wake_word import PorcupineWakeWord
 from core.config import settings
 from core.logger import configure_logging, get_logger, new_session_id
 from core.state import AssistantState, StateMachine
-from execution.apps import resolve_app
+from execution.apps import extract_app_keys, resolve_app
 from execution.linux import safe_execute
 
 configure_logging()
@@ -40,11 +40,11 @@ class ElysiaAssistant:
         self._stt = get_stt()
         self._wake_word = PorcupineWakeWord()
         self._system_prompt = build_system_prompt()
-        self._pending_confirmation = None
+        self._pending = None
         self._pending_lock = threading.Lock()
         self._session_id = ""
-        self._last_suggestion: Optional[str] = None
         self._await_mode: Optional[str] = None
+        self._suggest_retries = 0
         self._vad_errors = 0
         self._pipeline_thread: Optional[threading.Thread] = None
         self._shutdown_done = False
@@ -143,6 +143,7 @@ class ElysiaAssistant:
 
         self._session_id = new_session_id()
         self._await_mode = None
+        self._suggest_retries = 0
         log.info("wake_word_triggered", session_id=self._session_id)
 
         if self._fsm.transition_to(AssistantState.LISTENING):
@@ -209,7 +210,7 @@ class ElysiaAssistant:
         start_e2e = time.perf_counter()
         try:
             with self._pending_lock:
-                has_pending = self._pending_confirmation is not None
+                has_pending = self._pending is not None
             suffix = "-confirm" if has_pending else ""
             save_debug_audio(self._session_id, audio, suffix=suffix)
             if had_speech:
@@ -218,11 +219,11 @@ class ElysiaAssistant:
                 log.info("no_speech_recorded", session_id=self._session_id)
                 text = ""
             with self._pending_lock:
-                has_pending = self._pending_confirmation is not None
+                has_pending = self._pending is not None
             if has_pending:
                 self._handle_confirmation_response(text)
                 return
-            if self._await_mode in ("followup_answer", "suggestion_answer"):
+            if self._await_mode == "followup_answer":
                 self._handle_followup_answer(text)
                 return
             if not text:
@@ -247,12 +248,15 @@ class ElysiaAssistant:
             return
         fn_call = extract_function_call(response)
         if fn_call:
-            tool_res: ToolResponse = handle_function_call(fn_call)
+            tool_res: ToolResponse = handle_function_call(fn_call, source_text=text)
             if tool_res.needs_confirmation:
                 with self._pending_lock:
-                    self._pending_confirmation = {
+                    self._pending = {
+                        "kind": tool_res.kind or "destructive",
                         "action": tool_res.pending_action,
                         "argv": tool_res.pending_argv,
+                        "raw": tool_res.raw,
+                        "source": tool_res.source,
                     }
                 self._speak_and_listen(tool_res.text)
             else:
@@ -261,36 +265,20 @@ class ElysiaAssistant:
             reply = extract_text(response)
             if not reply:
                 reply = "Maaf, saya tidak mengerti."
-            # Kalau Elysia balik bertanya (klarifikasi), tunggu jawaban user dulu;
-            # selain itu langsung tawarkan perintah berikutnya.
-            low = reply.lower()
-            suggestion = None
-            if "maksud kamu" in low or "maksud anda" in low:
-                for cand in [
-                    "terminal",
-                    "brave browser",
-                    "file manager",
-                    "spotify",
-                    "browser",
-                ]:
-                    if cand in low:
-                        suggestion = cand
-                        break
-            if suggestion:
-                self._last_suggestion = suggestion
-                self._speak_and_await(reply, "suggestion_answer", start_e2e)
-            else:
-                self._last_suggestion = None
-                self._speak_and_ask_followup(reply, start_e2e)
+            self._speak_and_ask_followup(reply, start_e2e)
 
     def _handle_confirmation_response(self, text: str):
         with self._pending_lock:
-            pending = self._pending_confirmation
+            pending = self._pending
             if pending:
-                self._pending_confirmation = None
+                self._pending = None
 
         if not pending:
             self._speak_and_idle("Tidak ada perintah yang menunggu konfirmasi.")
+            return
+
+        if pending["kind"] == "app_suggestion":
+            self._handle_app_suggestion_response(pending, text)
             return
 
         if not text.strip():
@@ -305,10 +293,53 @@ class ElysiaAssistant:
 
         self._speak_and_idle(tool_res.text)
 
+    def _handle_app_suggestion_response(self, pending: dict, text: str):
+        rejected_argv = pending.get("argv")
+
+        # 1-3) A concrete app named in the reply (≠ the rejected candidate) wins,
+        # even alongside 'iya' — e.g. "iya, firefox" / "bukan brave, firefox".
+        if text.strip():
+            for key in extract_app_keys(text):
+                argv = resolve_app(key)
+                if argv is None or argv == rejected_argv:
+                    continue
+                result = safe_execute(argv)
+                log.info("app_suggestion_alt", raw=pending.get("raw"), chosen=key)
+                self._speak_and_ask_followup(
+                    f"{key.title()} sudah dibuka."
+                    if result.success
+                    else f"Gagal membuka {key}: {result.message}",
+                    time.perf_counter(),
+                )
+                return
+
+        # 4) Plain affirmation -> open the offered candidate.
+        if is_affirmation(text):
+            result = safe_execute(rejected_argv)
+            log.info("app_suggestion_confirmed", raw=pending.get("raw"), chosen=pending["action"])
+            self._speak_and_ask_followup(
+                f"{pending['action'].title()} sudah dibuka."
+                if result.success
+                else f"Gagal membuka {pending['action']}: {result.message}",
+                time.perf_counter(),
+            )
+            return
+
+        # 5) Nothing usable -> ask again, capped per session.
+        self._suggest_retries += 1
+        if self._suggest_retries > 2:
+            log.warning("app_suggestion_give_up", raw=pending.get("raw"))
+            self._speak_and_idle(
+                "Maaf, Elysia belum bisa mengerti. Silakan coba lagi nanti."
+            )
+            return
+        log.info("app_suggestion_retry", raw=pending.get("raw"), attempt=self._suggest_retries)
+        self._speak_and_listen_for_command(prompt="Baik, silakan sebut ulang.")
+
     def _speak_and_listen(self, text: str):
         if not self._fsm.transition_to(AssistantState.SPEAKING):
             with self._pending_lock:
-                self._pending_confirmation = None
+                self._pending = None
             return
 
         self._recorder.mute()
@@ -337,7 +368,7 @@ class ElysiaAssistant:
                 pass
         else:
             with self._pending_lock:
-                self._pending_confirmation = None
+                self._pending = None
             if not self._fsm.transition_to(AssistantState.IDLE):
                 self._fsm.reset_to_idle("speak_and_listen_fallback")
             self._wake_word.resume()
@@ -390,10 +421,7 @@ class ElysiaAssistant:
             self._wake_word.resume()
 
     def _handle_followup_answer(self, text: str):
-        mode = self._await_mode
         self._await_mode = None
-        suggestion = self._last_suggestion
-        self._last_suggestion = None
 
         intent = classify_followup(text)
 
@@ -403,18 +431,6 @@ class ElysiaAssistant:
             return
 
         if intent == "yes":
-            if mode == "suggestion_answer" and suggestion:
-                log.info("suggestion_confirmed", suggestion=suggestion)
-                argv = resolve_app(suggestion)
-                if argv:
-                    r = safe_execute(argv)
-                    self._speak_and_ask_followup(
-                        f"{suggestion.title()} sudah dibuka."
-                        if r.success
-                        else f"Gagal membuka {suggestion}: {r.message}",
-                        time.perf_counter(),
-                    )
-                    return
             log.info("followup_accepted")
             self._speak_and_listen_for_command()
             return
@@ -423,7 +439,7 @@ class ElysiaAssistant:
         log.info("followup_direct_command", text=text)
         self._run_command(text, time.perf_counter())
 
-    def _speak_and_listen_for_command(self):
+    def _speak_and_listen_for_command(self, prompt: str = "Silakan."):
         """Short ack, then listen for the next command without a wake word."""
         if not self._fsm.transition_to(AssistantState.SPEAKING):
             if not self._fsm.transition_to(AssistantState.IDLE):
@@ -434,7 +450,7 @@ class ElysiaAssistant:
         self._recorder.mute()
         self._wake_word.pause()
         try:
-            speak("Silakan.")
+            speak(prompt)
         finally:
             self._settle_after_speech()
             try:
@@ -477,7 +493,8 @@ class ElysiaAssistant:
 
     def _speak_and_idle(self, text: str, start_e2e: float = 0.0):
         self._await_mode = None
-        self._last_suggestion = None
+        with self._pending_lock:
+            self._pending = None
         if not self._fsm.transition_to(AssistantState.SPEAKING):
             return
 
@@ -551,7 +568,7 @@ class ElysiaAssistant:
         self._running = False
 
         with self._pending_lock:
-            self._pending_confirmation = None
+            self._pending = None
         self._await_mode = None
 
         if self._pipeline_thread is not None and self._pipeline_thread.is_alive():

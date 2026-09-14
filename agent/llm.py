@@ -137,6 +137,16 @@ def _request(user_text: str, system_prompt: str) -> types.GenerateContentRespons
     return response
 
 
+def _plain_generate(prompt: str) -> types.GenerateContentResponse:
+    client = get_client()
+    model = resolve_model()
+    return client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(temperature=0.0),
+    )
+
+
 def _is_retryable(exc: BaseException) -> bool:
     """Retry transient failures (5xx, timeouts, network). Skip 4xx client errors
     such as 400 INVALID_ARGUMENT, except 429 rate limiting which is retryable."""
@@ -179,3 +189,36 @@ def extract_text(response: types.GenerateContentResponse) -> str:
             if part.text:
                 parts.append(part.text)
     return " ".join(parts).strip()
+
+
+def choose_app(raw_name: str) -> Optional[str]:
+    """Ask the LLM to pick the most likely allowlist entry for a misheard name.
+
+    Only a fallback for when deterministic fuzzy matching is unsure. The answer
+    is always validated against the registry (never trusted blindly)."""
+    from execution.apps import list_allowed_apps, resolve_app, suggest_app
+
+    raw = (raw_name or "").strip()
+    if not raw:
+        return None
+    names = list_allowed_apps()
+    prompt = (
+        f"User menyebut nama aplikasi (mungkin salah dengar atau typo): {raw!r}.\n"
+        f"Daftar aplikasi yang tersedia: {', '.join(names)}.\n"
+        "Pilih SATU nama dari daftar yang paling mungkin maksudnya. "
+        "Jawab HANYA nama tersebut, atau NONE bila tidak ada yang cocok."
+    )
+    try:
+        response = run_with_timeout(
+            lambda: _plain_generate(prompt), settings.LLM_REQUEST_TIMEOUT_MS / 1000
+        )
+    except Exception as e:
+        log.warning("choose_app_failed", error=str(e))
+        return None
+
+    answer = extract_text(response).strip().strip("\"'").lower()
+    if not answer or answer == "none":
+        return None
+    if resolve_app(answer) is not None:
+        return answer
+    return suggest_app(answer)

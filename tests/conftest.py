@@ -3,6 +3,15 @@ import pytest
 from unittest.mock import MagicMock, patch
 from core.state import StateMachine
 
+@pytest.fixture(autouse=True)
+def _clear_suggestion_cache():
+    from execution.apps import clear_suggestion_cache
+
+    clear_suggestion_cache()
+    yield
+    clear_suggestion_cache()
+
+
 @pytest.fixture
 def state_machine():
     return StateMachine(cooldown_sec=0.05)

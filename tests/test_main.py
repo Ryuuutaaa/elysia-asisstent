@@ -13,9 +13,10 @@ def _stub_llm_text(monkeypatch, text: str):
     monkeypatch.setattr("main.extract_text", lambda response: text)
 
 
-def test_last_suggestion_is_initialized():
+def test_pending_and_retries_initialized():
     assistant = ElysiaAssistant()
-    assert assistant._last_suggestion is None
+    assert assistant._pending is None
+    assert assistant._suggest_retries == 0
 
 
 def test_affirmative_first_command_does_not_crash(monkeypatch):
@@ -38,10 +39,20 @@ def test_affirmative_first_command_does_not_crash(monkeypatch):
     assert spoken == ["Halo, ada yang bisa dibantu?"]
 
 
+def _destructive_pending():
+    return {
+        "kind": "destructive",
+        "action": "shutdown",
+        "argv": ["systemctl", "poweroff"],
+        "raw": "",
+        "source": "",
+    }
+
+
 def test_confirmation_affirm_executes(monkeypatch):
     assistant = ElysiaAssistant()
     monkeypatch.setattr(assistant, "_speak_and_idle", lambda *args, **kwargs: None)
-    assistant._pending_confirmation = {"action": "shutdown", "argv": ["systemctl", "poweroff"]}
+    assistant._pending = _destructive_pending()
 
     executed = []
     monkeypatch.setattr(
@@ -52,13 +63,13 @@ def test_confirmation_affirm_executes(monkeypatch):
     assistant._handle_confirmation_response("ya")
 
     assert executed == [(["systemctl", "poweroff"], "shutdown")]
-    assert assistant._pending_confirmation is None
+    assert assistant._pending is None
 
 
 def test_confirmation_negative_cancels(monkeypatch):
     assistant = ElysiaAssistant()
     monkeypatch.setattr(assistant, "_speak_and_idle", lambda *args, **kwargs: None)
-    assistant._pending_confirmation = {"action": "shutdown", "argv": ["systemctl", "poweroff"]}
+    assistant._pending = _destructive_pending()
 
     executed = []
     cancelled = []
@@ -78,7 +89,7 @@ def test_confirmation_timeout_cancels(monkeypatch):
     assistant = ElysiaAssistant()
     spoken = []
     monkeypatch.setattr(assistant, "_speak_and_idle", lambda text, *args, **kwargs: spoken.append(text))
-    assistant._pending_confirmation = {"action": "shutdown", "argv": ["systemctl", "poweroff"]}
+    assistant._pending = _destructive_pending()
 
     executed = []
     monkeypatch.setattr("main.execute_confirmed_action", lambda *args: executed.append(args))
@@ -142,14 +153,14 @@ def test_shutdown_is_idempotent_and_clears_pending():
     assistant = ElysiaAssistant()
     assistant._recorder = MagicMock()
     assistant._wake_word = MagicMock()
-    assistant._pending_confirmation = {"action": "shutdown", "argv": ["systemctl", "poweroff"]}
+    assistant._pending = _destructive_pending()
 
     assistant.shutdown()
     assistant.shutdown()
 
     assistant._recorder.stop_stream.assert_called_once()
     assistant._wake_word.delete.assert_called_once()
-    assert assistant._pending_confirmation is None
+    assert assistant._pending is None
 
 
 def test_on_audio_frame_recovers_after_repeated_vad_errors():
@@ -229,34 +240,79 @@ def test_followup_affirmation_with_command_runs_it(monkeypatch):
     assert listened == []
 
 
-def test_suggestion_answer_executes_suggestion(monkeypatch):
+def _app_pending(action="brave browser", argv=None):
+    return {
+        "kind": "app_suggestion",
+        "action": action,
+        "argv": argv or ["brave-browser"],
+        "raw": "breif",
+        "source": "fuzzy",
+    }
+
+
+def test_app_suggestion_affirm_opens_candidate(monkeypatch):
     assistant = ElysiaAssistant()
-    assistant._await_mode = "suggestion_answer"
-    assistant._last_suggestion = "terminal"
+    executed = []
     spoken = []
-    monkeypatch.setattr("main.resolve_app", lambda name: ["kitty"])
-    monkeypatch.setattr("main.safe_execute", lambda argv: MagicMock(success=True, message="ok"))
+    monkeypatch.setattr(
+        "main.safe_execute", lambda argv: executed.append(argv) or MagicMock(success=True, message="ok")
+    )
     monkeypatch.setattr(
         assistant, "_speak_and_ask_followup", lambda text, start_e2e=0.0: spoken.append(text)
     )
 
-    assistant._handle_followup_answer("iya")
+    assistant._handle_app_suggestion_response(_app_pending(), "iya")
 
-    assert spoken and "Terminal sudah dibuka" in spoken[0]
-    assert assistant._last_suggestion is None
+    assert executed == [["brave-browser"]]
+    assert spoken and "Brave Browser sudah dibuka" in spoken[0]
 
 
-def test_suggestion_answer_denial_clears_suggestion(monkeypatch):
+def test_app_suggestion_concrete_name_wins(monkeypatch):
     assistant = ElysiaAssistant()
-    assistant._await_mode = "suggestion_answer"
-    assistant._last_suggestion = "terminal"
+    executed = []
+    spoken = []
+    monkeypatch.setattr(
+        "main.safe_execute", lambda argv: executed.append(argv) or MagicMock(success=True, message="ok")
+    )
+    monkeypatch.setattr(
+        assistant, "_speak_and_ask_followup", lambda text, start_e2e=0.0: spoken.append(text)
+    )
+
+    assistant._handle_app_suggestion_response(_app_pending(), "bukan brave, firefox")
+
+    assert executed == [["firefox"]]
+    assert spoken and "Firefox sudah dibuka" in spoken[0]
+
+
+def test_app_suggestion_rejected_candidate_not_reexecuted(monkeypatch):
+    assistant = ElysiaAssistant()
+    executed = []
+    prompts = []
+    monkeypatch.setattr(
+        "main.safe_execute", lambda argv: executed.append(argv) or MagicMock(success=True, message="ok")
+    )
+    monkeypatch.setattr(
+        assistant, "_speak_and_listen_for_command", lambda prompt="Silakan.": prompts.append(prompt)
+    )
+
+    # 'bukan brave' only names the rejected candidate -> don't re-open it.
+    assistant._handle_app_suggestion_response(_app_pending(), "bukan brave")
+
+    assert executed == []
+    assert prompts == ["Baik, silakan sebut ulang."]
+
+
+def test_app_suggestion_retry_cap_then_idle(monkeypatch):
+    assistant = ElysiaAssistant()
+    assistant._suggest_retries = 0
+    monkeypatch.setattr(assistant, "_speak_and_listen_for_command", lambda prompt="Silakan.": None)
     spoken = []
     monkeypatch.setattr(assistant, "_speak_and_idle", lambda text, *args, **kwargs: spoken.append(text))
 
-    assistant._handle_followup_answer("tidak")
+    for _ in range(3):
+        assistant._handle_app_suggestion_response(_app_pending(), "bukan")
 
-    assert assistant._last_suggestion is None
-    assert spoken
+    assert "belum bisa mengerti" in spoken[-1].lower()
 
 
 def test_settle_after_speech_uses_config(monkeypatch):
