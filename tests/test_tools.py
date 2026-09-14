@@ -177,7 +177,7 @@ def test_transient_llm_error_is_retried_not_cached(monkeypatch):
     first = handle_function_call(fc, source_text="buka breif")
     second = handle_function_call(fc, source_text="buka breif")
 
-    assert first.kind is None
+    assert first.kind == "app_error"  # transient -> system error, not "unknown"
     assert second.kind == "app_suggestion"
     assert calls["n"] == 2
 

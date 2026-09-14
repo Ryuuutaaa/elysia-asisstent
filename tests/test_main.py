@@ -292,7 +292,9 @@ def test_app_suggestion_rejected_candidate_not_reexecuted(monkeypatch):
         "main.safe_execute", lambda argv: executed.append(argv) or MagicMock(success=True, message="ok")
     )
     monkeypatch.setattr(
-        assistant, "_speak_and_listen_for_command", lambda prompt="Silakan.": prompts.append(prompt)
+        assistant,
+        "_speak_and_listen_for_command",
+        lambda prompt="Silakan.", start_e2e=0.0: prompts.append(prompt),
     )
 
     # 'bukan brave' only names the rejected candidate -> don't re-open it.
@@ -305,7 +307,9 @@ def test_app_suggestion_rejected_candidate_not_reexecuted(monkeypatch):
 def test_app_suggestion_retry_cap_then_idle(monkeypatch):
     assistant = ElysiaAssistant()
     assistant._suggest_retries = 0
-    monkeypatch.setattr(assistant, "_speak_and_listen_for_command", lambda prompt="Silakan.": None)
+    monkeypatch.setattr(
+        assistant, "_speak_and_listen_for_command", lambda prompt="Silakan.", start_e2e=0.0: None
+    )
     spoken = []
     monkeypatch.setattr(assistant, "_speak_and_idle", lambda text, *args, **kwargs: spoken.append(text))
 
@@ -313,6 +317,49 @@ def test_app_suggestion_retry_cap_then_idle(monkeypatch):
         assistant._handle_app_suggestion_response(_app_pending(), "bukan")
 
     assert "belum bisa mengerti" in spoken[-1].lower()
+
+
+def test_run_command_app_error_relistens_without_retry_budget(monkeypatch):
+    assistant = ElysiaAssistant()
+    monkeypatch.setattr("main.chat", lambda text, prompt: object())
+    monkeypatch.setattr("main.extract_function_call", lambda resp: object())
+    monkeypatch.setattr(
+        "main.handle_function_call",
+        lambda fc, source_text="": ToolResponse(text="Maaf, koneksi terganggu.", kind="app_error"),
+    )
+    prompts = []
+    monkeypatch.setattr(
+        assistant,
+        "_speak_and_listen_for_command",
+        lambda prompt="Silakan.", start_e2e=0.0: prompts.append(prompt),
+    )
+    assistant._suggest_retries = 0
+
+    assistant._run_command("buka breif", 0.0)
+
+    assert prompts == ["Maaf, koneksi terganggu."]
+    assert assistant._suggest_retries == 0
+
+
+def test_speak_and_listen_for_command_logs_cycle_complete(monkeypatch):
+    import time as _time
+
+    assistant = ElysiaAssistant()
+    assistant._recorder = MagicMock()
+    assistant._wake_word = MagicMock()
+    assistant._start_listening = MagicMock()
+    monkeypatch.setattr("main.speak", lambda text: None)
+    monkeypatch.setattr("main.time.sleep", lambda seconds: None)
+    fake_log = MagicMock()
+    monkeypatch.setattr("main.log", fake_log)
+
+    assistant._fsm.transition_to(AssistantState.LISTENING)
+    assistant._fsm.transition_to(AssistantState.PROCESSING)
+
+    assistant._speak_and_listen_for_command("hi", start_e2e=_time.perf_counter() - 0.5)
+
+    events = [c.args[0] for c in fake_log.info.call_args_list if c.args]
+    assert "cycle_complete" in events
 
 
 def test_settle_after_speech_uses_config(monkeypatch):

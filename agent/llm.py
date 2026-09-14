@@ -191,6 +191,9 @@ def extract_text(response: types.GenerateContentResponse) -> str:
     return " ".join(parts).strip()
 
 
+_CHOOSE_APP_ATTEMPTS = 2
+
+
 def choose_app(raw_name: str, source_text: str = "") -> tuple[str, Optional[str]]:
     """Ask the LLM to pick the most likely allowlist entry for a misheard name.
 
@@ -216,17 +219,20 @@ def choose_app(raw_name: str, source_text: str = "") -> tuple[str, Optional[str]
         "Pilih SATU nama dari daftar yang paling mungkin maksudnya. "
         "Jawab HANYA nama tersebut, atau NONE bila tidak ada yang cocok."
     )
-    try:
-        response = run_with_timeout(
-            lambda: _plain_generate(prompt), settings.LLM_REQUEST_TIMEOUT_MS / 1000
-        )
-    except Exception as e:
-        log.warning("choose_app_failed", error=str(e))
-        return "error", None
+    for attempt in range(_CHOOSE_APP_ATTEMPTS):
+        try:
+            response = run_with_timeout(
+                lambda: _plain_generate(prompt), settings.LLM_REQUEST_TIMEOUT_MS / 1000
+            )
+        except Exception as e:
+            log.warning("choose_app_failed", error=str(e), attempt=attempt + 1)
+            continue
 
-    answer = extract_text(response).strip().strip("\"'").lower()
-    if not answer or answer == "none":
+        answer = extract_text(response).strip().strip("\"'").lower()
+        if not answer or answer == "none":
+            return "none", None
+        if resolve_app(answer) is not None:
+            return "found", answer
         return "none", None
-    if resolve_app(answer) is not None:
-        return "found", answer
-    return "none", None
+
+    return "error", None

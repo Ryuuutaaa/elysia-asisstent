@@ -150,6 +150,12 @@ def _handle_open_application(args: dict, source_text: str = "") -> ToolResponse:
 
     if candidate is None:
         log.info("app_suggestion_none", raw=app_name, source=source)
+        if source == "llm-error":
+            # Transient LLM/network failure — a system error, not "app unknown".
+            return ToolResponse(
+                text="Maaf, koneksi ke otak Elysia sedang terganggu. Coba sebut lagi ya.",
+                kind="app_error",
+            )
         return ToolResponse(text=f"Maaf, Elysia belum mengenali '{app_name}'. Coba sebut ulang.")
 
     argv = resolve_app(candidate)

@@ -77,6 +77,22 @@ def test_choose_app_transient_error(monkeypatch):
     assert choose_app("breif") == ("error", None)
 
 
+def test_choose_app_retries_transient_error_then_succeeds(monkeypatch):
+    calls = {"n": 0}
+
+    def flaky(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return object()
+
+    monkeypatch.setattr("agent.llm._plain_generate", flaky)
+    monkeypatch.setattr("agent.llm.extract_text", lambda resp: "brave browser")
+
+    assert choose_app("breif") == ("found", "brave browser")
+    assert calls["n"] == 2
+
+
 def test_choose_app_includes_user_context(monkeypatch):
     captured = {}
 
