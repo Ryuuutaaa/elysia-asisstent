@@ -371,6 +371,61 @@ def test_app_suggestion_rejected_candidate_not_reexecuted(monkeypatch):
     assert prompts == ["Baik, silakan sebut ulang."]
 
 
+def test_app_suggestion_negated_other_app_is_not_opened(monkeypatch):
+    assistant = ElysiaAssistant()
+    executed = []
+    prompts = []
+    monkeypatch.setattr(
+        "main.safe_execute", lambda argv: executed.append(argv) or MagicMock(success=True, message="ok")
+    )
+    monkeypatch.setattr(
+        assistant,
+        "_speak_and_listen_for_command",
+        lambda prompt="Silakan.", start_e2e=0.0: prompts.append(prompt),
+    )
+
+    assistant._handle_app_suggestion_response(_app_pending(), "bukan firefox")
+
+    assert executed == []
+    assert prompts == ["Baik, silakan sebut ulang."]
+
+
+def test_app_suggestion_negated_then_named_app_opens(monkeypatch):
+    assistant = ElysiaAssistant()
+    executed = []
+    spoken = []
+    monkeypatch.setattr(
+        "main.safe_execute", lambda argv: executed.append(argv) or MagicMock(success=True, message="ok")
+    )
+    monkeypatch.setattr(
+        assistant, "_speak_and_ask_followup", lambda text, start_e2e=0.0: spoken.append(text)
+    )
+
+    assistant._handle_app_suggestion_response(_app_pending(), "bukan firefox, brave")
+
+    assert executed == [["brave-browser"]]
+    assert spoken and "Brave sudah dibuka" in spoken[0]
+
+
+def test_app_suggestion_negated_alias_is_not_opened(monkeypatch):
+    assistant = ElysiaAssistant()
+    executed = []
+    prompts = []
+    monkeypatch.setattr(
+        "main.safe_execute", lambda argv: executed.append(argv) or MagicMock(success=True, message="ok")
+    )
+    monkeypatch.setattr(
+        assistant,
+        "_speak_and_listen_for_command",
+        lambda prompt="Silakan.", start_e2e=0.0: prompts.append(prompt),
+    )
+
+    assistant._handle_app_suggestion_response(_app_pending(), "bukan brave browser")
+
+    assert executed == []
+    assert prompts == ["Baik, silakan sebut ulang."]
+
+
 def test_app_suggestion_retry_cap_then_idle(monkeypatch):
     assistant = ElysiaAssistant()
     assistant._suggest_retries = 0

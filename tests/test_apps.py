@@ -1,6 +1,6 @@
 from execution.apps import (
     resolve_app, resolve_destructive_action, is_destructive_action,
-    list_allowed_apps, normalize_app_name, APP_REGISTRY
+    list_allowed_apps, normalize_app_name, extract_rejected_app_keys, APP_REGISTRY
 )
 
 def test_resolve_known_app():
@@ -45,3 +45,14 @@ def test_list_allowed_apps_sorted():
 def test_normalize_app_name():
     assert normalize_app_name("  BRAVE BROWSER  ") == "brave browser"
     assert normalize_app_name("Spotify") == "spotify"
+
+
+def test_extract_rejected_app_keys_marks_direct_negation():
+    assert extract_rejected_app_keys("bukan firefox") == ["firefox"]
+    assert extract_rejected_app_keys("jangan buka firefox") == ["firefox"]
+
+
+def test_extract_rejected_app_keys_only_negates_next_app():
+    assert extract_rejected_app_keys("bukan firefox, brave") == ["firefox"]
+    assert extract_rejected_app_keys("iya, firefox") == []
+    assert extract_rejected_app_keys("") == []

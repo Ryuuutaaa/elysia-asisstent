@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     LLM_TOTAL_BUDGET_MS: int = Field(default=4500, ge=1000, le=30000, description="Total budget wall-clock semua percobaan Gemini (ms)")
     MODEL_SCAN_TIMEOUT_SEC: float = Field(default=5.0, ge=1.0, le=30.0, description="Batas waktu scan daftar model Gemini saat startup")
     MODEL_PROBE_TIMEOUT_SEC: float = Field(default=5.0, ge=1.0, le=30.0, description="Batas waktu probe satu kandidat model Gemini saat startup")
+    MODEL_RESOLVE_BUDGET_SEC: float = Field(default=7.0, ge=1.0, le=60.0, description="Total budget wall-clock untuk semua probe kandidat model Gemini")
     APP_SUGGEST_MAX_RETRIES: int = Field(default=2, ge=0, le=5, description="Batas berapa kali Elysia minta ulang nama aplikasi yang salah dengar")
 
     model_config = {"env_file": ".env", "case_sensitive": True, "extra": "ignore"}

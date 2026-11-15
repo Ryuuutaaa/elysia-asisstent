@@ -127,6 +127,45 @@ def test_scan_available_models_returns_empty_when_client_fails(monkeypatch):
     assert llm.scan_available_models() == []
 
 
+class _FakeTime:
+    def __init__(self, start: float = 1000.0):
+        self.value = start
+
+    def monotonic(self) -> float:
+        self.value += 1.0
+        return self.value
+
+
+def test_resolve_model_stops_when_total_budget_is_exhausted(monkeypatch):
+    class FakeModels:
+        def generate_content(self, model, contents):
+            return object()
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.models = FakeModels()
+
+    attempts = []
+    fake_time = _FakeTime()
+
+    def fake_run(fn, timeout, budget="llm"):
+        attempts.append((timeout, budget))
+        fake_time.value += 4.0
+        raise TimeoutError("probe too slow")
+
+    monkeypatch.setattr(llm.genai, "Client", FakeClient)
+    monkeypatch.setattr(llm, "_client", None)
+    monkeypatch.setattr(llm, "_resolved_model", None)
+    monkeypatch.setattr(llm, "_resolved_for", None)
+    monkeypatch.setattr(llm, "time", fake_time)
+    monkeypatch.setattr(llm, "run_with_timeout", fake_run)
+
+    resolved = llm.resolve_model("m1")
+
+    assert resolved == "m1"
+    assert len(attempts) == 2
+
+
 def test_turn_deadline_is_in_the_future():
     assert llm.turn_deadline() > time.monotonic()
 

@@ -115,6 +115,37 @@ def extract_app_keys(text: str) -> list[str]:
     return found
 
 
+NEGATION_WORDS = {"bukan", "jangan", "bukanlah", "selain", "kecuali", "no", "not"}
+
+
+def extract_rejected_app_keys(text: str) -> list[str]:
+    """Registry keys that are negated in `text` ("bukan firefox", "jangan buka
+    firefox"). A negation is consumed by the next app name, so
+    "bukan firefox, brave" rejects only firefox."""
+    norm = norm_for_match(text)
+    if not norm:
+        return []
+
+    matches = []
+    for key in APP_REGISTRY:
+        pattern = rf"(?<!\w){re.escape(norm_for_match(key))}(?!\w)"
+        for match in re.finditer(pattern, norm):
+            matches.append((match.start(), match.end(), key))
+    matches.sort()
+
+    rejected = []
+    previous_end = 0
+    for start, end, key in matches:
+        span = norm[previous_end:start]
+        if any(
+            re.search(rf"(?<!\w){re.escape(word)}(?!\w)", span)
+            for word in NEGATION_WORDS
+        ):
+            rejected.append(key)
+        previous_end = end
+    return rejected
+
+
 # --- Session cache: raw name -> candidate (None = definitively no match) ------
 
 _SUGGEST_CACHE: "OrderedDict[str, Optional[str]]" = OrderedDict()

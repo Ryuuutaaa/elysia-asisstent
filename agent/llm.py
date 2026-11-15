@@ -45,12 +45,16 @@ def resolve_model(preferred: Optional[str] = None) -> str:
             candidates.append(fallback)
 
     client = get_client()
+    deadline = time.monotonic() + settings.MODEL_RESOLVE_BUDGET_SEC
     last_err = None
     for m in candidates:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
             run_with_timeout(
                 lambda model=m: client.models.generate_content(model=model, contents="ping"),
-                settings.MODEL_PROBE_TIMEOUT_SEC,
+                min(remaining, settings.MODEL_PROBE_TIMEOUT_SEC),
                 budget="llm",
             )
             _resolved_model = m

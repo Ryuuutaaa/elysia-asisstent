@@ -28,7 +28,7 @@ from core.config import settings
 from core.logger import configure_logging, get_logger, new_session_id
 from core.state import AssistantState, StateMachine
 from core.utils import text_fingerprint
-from execution.apps import extract_app_keys, resolve_app
+from execution.apps import extract_app_keys, extract_rejected_app_keys, resolve_app
 from execution.linux import safe_execute
 
 configure_logging()
@@ -344,9 +344,17 @@ class ElysiaAssistant:
         # 1-3) A concrete app named in the reply (≠ the rejected candidate) wins,
         # even alongside 'iya' — e.g. "iya, firefox" / "bukan brave, firefox".
         if text.strip():
+            rejected_commands = set()
+            for rejected_key in extract_rejected_app_keys(text):
+                resolved = resolve_app(rejected_key)
+                if resolved is not None:
+                    rejected_commands.add(tuple(resolved))
             for key in extract_app_keys(text):
                 argv = resolve_app(key)
-                if argv is None or argv == rejected_argv:
+                if argv is None:
+                    continue
+                if tuple(argv) in rejected_commands:
+                    log.info("app_suggestion_negated", raw=pending.raw, chosen=key)
                     continue
                 result = safe_execute(argv)
                 log.info("app_suggestion_alt", raw=pending.raw, chosen=key)

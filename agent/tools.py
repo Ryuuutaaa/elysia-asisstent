@@ -23,7 +23,7 @@ log = get_logger("tools")
 
 CANCEL_WORDS = {
     "tidak", "tdk", "enggak", "engga", "nggak", "ngga", "gak", "ga", "gk",
-    "gausah", "batal", "batalkan", "jangan", "no", "stop", "cancel", "urungkan",
+    "gausah", "batal", "batalkan", "jangan", "bukan", "no", "stop", "cancel", "urungkan",
 }
 CONFIRM_WORDS = {
     "ya", "yah", "yak", "yoi", "iya", "benar", "bener", "betul", "lanjut",

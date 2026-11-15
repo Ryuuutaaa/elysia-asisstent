@@ -56,3 +56,14 @@ def test_debug_audio_file_is_private(tmp_path, monkeypatch):
 
     assert path is not None
     assert (os.stat(path).st_mode & 0o777) == 0o600
+
+
+def test_production_session_id_is_not_double_prefixed(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(settings, "DEBUG_RECORD_AUDIO", True)
+
+    path = save_debug_audio("req-abcd1234", np.zeros(16, dtype=np.int16))
+
+    assert path is not None
+    assert (tmp_path / ".debug_audio" / "req-abcd1234.wav").exists()
+    assert not (tmp_path / ".debug_audio" / "req-req-abcd1234.wav").exists()

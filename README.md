@@ -110,7 +110,7 @@ pytest tests/ -v
 
 Test berjalan **tanpa audio server / mikrofon** (headless-safe): `sounddevice` diimpor lazy, jadi CI maupun laptop tanpa PulseAudio tidak error saat koleksi test.
 
-Total: 219 test cases (test_apps, test_tools, test_suggest, test_main, test_state, test_vad_stt, test_wake_word, test_resilience, test_debug_audio, test_devices, test_utils, test_llm, test_diagnostics, test_recorder). Coverage dijaga di ambang 65% agar tidak turun.
+Total: 228 test cases (test_apps, test_tools, test_suggest, test_main, test_state, test_vad_stt, test_wake_word, test_resilience, test_debug_audio, test_devices, test_utils, test_llm, test_diagnostics, test_recorder). Coverage dijaga di ambang 65% agar tidak turun.
 
 ---
 

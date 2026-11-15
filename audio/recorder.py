@@ -155,7 +155,8 @@ def save_debug_audio(session_id: str, audio: np.ndarray, suffix: str = "", max_f
 
     debug_dir = Path(".debug_audio")
     debug_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path = debug_dir / f"req-{session_id}{suffix}.wav"
+    stem = session_id if session_id.startswith("req-") else f"req-{session_id}"
+    path = debug_dir / f"{stem}{suffix}.wav"
     try:
         import wave
 

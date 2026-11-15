@@ -132,6 +132,7 @@ def test_is_affirmation_positive(text):
 @pytest.mark.parametrize("text", [
     "tidak", "batal", "jangan ya", "nggak ya", "stop", "", "   ",
     "gaya rambut", "halo", "gausah", "gak usah", "baik tapi jangan",
+    "bukan", "iya bukan brave",
 ])
 def test_is_affirmation_negative(text):
     assert is_affirmation(text) is False
