@@ -143,7 +143,7 @@ class PorcupineWakeWord:
                         self._rolling_buffer = self._rolling_buffer[self._target_frame_size :]
                         prediction = self._openwakeword_model.predict(chunk)
                         for model_name, score in prediction.items():
-                            if score >= 0.30:
+                            if score >= settings.WAKE_WORD_THRESHOLD:
                                 detected = (model_name, float(score))
                                 self._rolling_buffer = np.zeros(0, dtype=np.int16)
                                 break

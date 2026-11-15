@@ -5,7 +5,7 @@ from typing import Optional
 from faster_whisper import WhisperModel
 from core.config import settings
 from core.logger import get_logger
-from core.utils import run_with_timeout
+from core.utils import run_with_timeout, text_fingerprint
 
 log = get_logger("stt")
 
@@ -93,19 +93,38 @@ class STT:
 
         start = time.perf_counter()
         try:
-            text, info, max_no_speech = run_with_timeout(_do_transcribe, settings.STT_TIMEOUT_MS / 1000)
+            text, info, max_no_speech = run_with_timeout(
+                _do_transcribe, settings.STT_TIMEOUT_MS / 1000, budget="stt"
+            )
             latency_ms = (time.perf_counter() - start) * 1000
 
             if max_no_speech > 0.8:
-                log.warning("stt_no_speech_prob", no_speech_prob=round(max_no_speech, 2), text=text)
+                log.warning(
+                    "stt_no_speech_prob",
+                    no_speech_prob=round(max_no_speech, 2),
+                    text_len=len(text),
+                    text_fp=text_fingerprint(text),
+                )
                 return ""
 
             lang_prob = getattr(info, "language_probability", 1.0)
             if not text or lang_prob < 0.3:
-                log.warning("stt_empty_or_low_prob", text=text, prob=round(float(lang_prob), 2))
+                log.warning(
+                    "stt_empty_or_low_prob",
+                    text_len=len(text),
+                    text_fp=text_fingerprint(text),
+                    prob=round(float(lang_prob), 2),
+                )
                 return ""
 
-            log.info("stt_completed", stt_latency_ms=round(latency_ms, 1), text=text, prob=round(float(lang_prob), 2))
+            log.debug("stt_text_raw", text=text)
+            log.info(
+                "stt_completed",
+                stt_latency_ms=round(latency_ms, 1),
+                text_len=len(text),
+                text_fp=text_fingerprint(text),
+                prob=round(float(lang_prob), 2),
+            )
             return text
         except STTBusyError:
             log.warning("stt_busy_skipped", error_code="ERR_STT_EMPTY")

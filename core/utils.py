@@ -1,20 +1,26 @@
+import hashlib
 import threading
 
 # A Python thread that exceeds its budget cannot be killed, so it keeps running
 # until it returns. Cap how many can be outstanding at once: without this,
 # repeated timeouts on a slow network would pile up threads indefinitely.
-_MAX_INFLIGHT = 4
-_inflight = threading.Semaphore(_MAX_INFLIGHT)
+# LLM and STT have separate budgets so a hung LLM call cannot starve transcription.
+_LIMITS = {
+    "llm": 2,
+    "stt": 2,
+}
+_inflight = {name: threading.Semaphore(limit) for name, limit in _LIMITS.items()}
 
 
-def run_with_timeout(fn, timeout_sec: float):
+def run_with_timeout(fn, timeout_sec: float, budget: str = "llm"):
     """Run `fn` in a daemon thread and enforce a wall-clock budget.
 
     Used where the transport/SDK cannot enforce a short enough deadline
     (e.g. the Gemini API rejects deadlines below 10s)."""
-    if not _inflight.acquire(blocking=False):
+    limiter = _inflight[budget]
+    if not limiter.acquire(blocking=False):
         raise TimeoutError(
-            f"terlalu banyak operasi yang belum selesai (max {_MAX_INFLIGHT}); coba lagi"
+            f"terlalu banyak operasi {budget} yang belum selesai (max {_LIMITS[budget]}); coba lagi"
         )
 
     result: dict = {}
@@ -25,13 +31,13 @@ def run_with_timeout(fn, timeout_sec: float):
         except Exception as e:
             result["error"] = e
         finally:
-            _inflight.release()
+            limiter.release()
 
     thread = threading.Thread(target=target, daemon=True)
     try:
         thread.start()
     except Exception:
-        _inflight.release()
+        limiter.release()
         raise
 
     thread.join(timeout_sec)
@@ -40,3 +46,8 @@ def run_with_timeout(fn, timeout_sec: float):
     if "error" in result:
         raise result["error"]
     return result["value"]
+
+
+def text_fingerprint(text: str) -> str:
+    """Short stable hash usable in INFO logs instead of the raw transcript."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]

@@ -8,11 +8,12 @@ class Settings(BaseSettings):
     WAKE_WORD_ENGINE: Literal["openwakeword", "porcupine"] = Field(default="openwakeword")
     OPENWAKEWORD_MODEL: str = Field(default="hey_jarvis")
     OPENWAKEWORD_MODEL_PATH: str = Field(default="", description="Path ke file model openwakeword custom (mis. hey_elysia.onnx)")
+    WAKE_WORD_THRESHOLD: float = Field(default=0.30, ge=0.05, le=0.95, description="Ambang skor openWakeWord untuk dianggap terdeteksi")
     AUDIO_INPUT_SOURCE: Literal["mic", "speaker", "headset"] = Field(default="mic")
     SAMPLE_RATE: int = Field(default=16000, ge=8000, le=48000)
     VAD_SILENCE_THRESHOLD_MS: int = Field(default=800, ge=300, le=3000)
     VAD_THRESHOLD: float = Field(default=0.5, ge=0.1, le=0.9)
-    SILERO_VAD_HUB_REF: str = Field(default="", description="Pin ref torch.hub Silero VAD (mis. tag rilis); kosong = master")
+    SILERO_VAD_HUB_REF: str = Field(default="v5.1.2", description="Pin ref torch.hub Silero VAD; kosong = tag default yang di-pin di audio/vad.py, tidak pernah master")
     VAD_MAX_RECORD_MS: int = Field(default=15000, ge=5000, le=60000)
     VAD_NO_SPEECH_GRACE_MS: int = Field(default=5000, ge=1000, le=15000)
     VAD_START_IGNORE_MS: int = Field(default=500, ge=0, le=2000)
@@ -33,7 +34,10 @@ class Settings(BaseSettings):
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(default="INFO")
     DEBUG_RECORD_AUDIO: bool = Field(default=False)
     GEMINI_MODEL: str = Field(default="gemini-flash-latest", description="Model Gemini; pakai nama yang tersedia untuk API key Anda (fallback otomatis dicoba)")
-    LLM_REQUEST_TIMEOUT_MS: int = Field(default=3500, ge=500, le=30000)
+    LLM_REQUEST_TIMEOUT_MS: int = Field(default=2500, ge=500, le=10000, description="Batas waktu satu percobaan Gemini (ms)")
+    LLM_MAX_ATTEMPTS: int = Field(default=2, ge=1, le=3, description="Jumlah maksimum percobaan Gemini per perintah")
+    LLM_TOTAL_BUDGET_MS: int = Field(default=4500, ge=1000, le=30000, description="Total budget wall-clock semua percobaan Gemini (ms)")
+    APP_SUGGEST_MAX_RETRIES: int = Field(default=2, ge=0, le=5, description="Batas berapa kali Elysia minta ulang nama aplikasi yang salah dengar")
 
     model_config = {"env_file": ".env", "case_sensitive": True, "extra": "ignore"}
 

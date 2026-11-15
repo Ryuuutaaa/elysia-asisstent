@@ -1,9 +1,22 @@
+import os
 import subprocess
 import shutil
 import time
+
 from core.logger import get_logger
+from execution.apps import APP_REGISTRY, DESTRUCTIVE_ACTIONS
 
 log = get_logger("linux_executor")
+
+_SECRET_ENV_KEYS = ("GOOGLE_API_KEY", "PICOVOICE_ACCESS_KEY")
+
+# Only argv shapes that appear in the registries may ever be spawned. Keeping
+# this next to Popen makes the boundary structural: a new caller cannot bypass
+# the allowlist by calling safe_execute directly.
+_ALLOWED_ARGV: frozenset[tuple[str, ...]] = frozenset(
+    tuple(argv) for argv in (*APP_REGISTRY.values(), *DESTRUCTIVE_ACTIONS.values())
+)
+
 
 class ExecutionResult:
     def __init__(self, success: bool, message: str, latency_ms: float):
@@ -11,9 +24,22 @@ class ExecutionResult:
         self.message = message
         self.latency_ms = latency_ms
 
+
+def is_allowlisted(argv: list[str]) -> bool:
+    return tuple(argv) in _ALLOWED_ARGV
+
+
+def _child_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k not in _SECRET_ENV_KEYS}
+
+
 def safe_execute(argv: list[str], timeout: float = 5.0) -> ExecutionResult:
     if not argv:
         return ExecutionResult(False, "Perintah kosong.", 0.0)
+
+    if not is_allowlisted(argv):
+        log.error("argv_not_allowlisted", command=argv)
+        return ExecutionResult(False, "Perintah tidak diizinkan.", 0.0)
 
     binary = argv[0]
     binary_path = shutil.which(binary)
@@ -29,6 +55,7 @@ def safe_execute(argv: list[str], timeout: float = 5.0) -> ExecutionResult:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=_child_env(),
         )
         try:
             probe_timeout = min(timeout, 0.5) if timeout else 0.5
@@ -52,39 +79,3 @@ def safe_execute(argv: list[str], timeout: float = 5.0) -> ExecutionResult:
         latency_ms = (time.perf_counter() - start) * 1000
         log.error("execution_os_error", command=argv, error=str(e))
         return ExecutionResult(False, f"Gagal menjalankan {binary}: {e}", latency_ms)
-
-def safe_execute_blocking(argv: list[str], timeout: float = 10.0) -> ExecutionResult:
-    if not argv:
-        return ExecutionResult(False, "Perintah kosong.", 0.0)
-
-    start = time.perf_counter()
-    try:
-        result = subprocess.run(
-            argv,
-            shell=False,
-            capture_output=True,
-            timeout=timeout,
-        )
-        latency_ms = (time.perf_counter() - start) * 1000
-
-        if result.returncode == 0:
-            log.info("blocking_tool_executed", command=argv, exec_latency_ms=round(latency_ms, 1))
-            return ExecutionResult(True, "Perintah berhasil dijalankan.", latency_ms)
-        else:
-            stderr = result.stderr.decode(errors="replace").strip()[:200]
-            log.error("blocking_tool_failed", command=argv, returncode=result.returncode, stderr=stderr)
-            return ExecutionResult(False, f"Perintah gagal: {stderr}", latency_ms)
-    except subprocess.TimeoutExpired:
-        latency_ms = (time.perf_counter() - start) * 1000
-        log.error("blocking_tool_timeout", command=argv, timeout=timeout)
-        return ExecutionResult(False, "Perintah timeout.", latency_ms)
-    except OSError as e:
-        latency_ms = (time.perf_counter() - start) * 1000
-        log.error("blocking_tool_os_error", command=argv, error=str(e))
-        return ExecutionResult(False, f"Gagal: {e}", latency_ms)
-
-def hyprctl_dispatch(action: str, args: str = "") -> ExecutionResult:
-    argv = ["hyprctl", "dispatch", action]
-    if args:
-        argv.append(args)
-    return safe_execute_blocking(argv, timeout=3.0)

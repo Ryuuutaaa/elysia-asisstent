@@ -91,3 +91,25 @@ def test_missing_custom_model_without_key_raises(monkeypatch):
 
     assert detector._openwakeword_model is None
     assert detector._engine == "porcupine"
+
+
+def test_openwakeword_threshold_comes_from_config(monkeypatch):
+    import numpy as np
+
+    class FakeModel:
+        def predict(self, chunk):
+            return {"hey_elysia": 0.4}
+
+    detector = ww.PorcupineWakeWord()
+    detector._engine = "openwakeword"
+    detector._openwakeword_model = FakeModel()
+    fired = []
+    detector.set_on_wake(lambda: fired.append(True))
+
+    frame = np.zeros(1280, dtype=np.int16)
+    monkeypatch.setattr(ww.settings, "WAKE_WORD_THRESHOLD", 0.5)
+    assert detector.process_frame(frame) is False
+
+    monkeypatch.setattr(ww.settings, "WAKE_WORD_THRESHOLD", 0.3)
+    assert detector.process_frame(frame) is True
+    assert fired == [True]

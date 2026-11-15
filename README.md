@@ -97,7 +97,7 @@ Jalankan pengujian unit, FSM state transition, allowlist security, dan mock resi
 pytest tests/ -v
 ```
 
-Total: 184 test cases (test_apps, test_tools, test_suggest, test_main, test_state, test_vad_stt, test_wake_word, test_resilience, test_debug_audio, test_devices).
+Total: 185 test cases (test_apps, test_tools, test_suggest, test_main, test_state, test_vad_stt, test_wake_word, test_resilience, test_debug_audio, test_devices).
 
 ---
 
@@ -105,7 +105,11 @@ Total: 184 test cases (test_apps, test_tools, test_suggest, test_main, test_stat
 
 - **Zero Free-form Shell Execution**: Output LLM dilarang keras menjalankan string shell bebas (shell=True).
 - **Strict Allowlist**: LLM hanya memilih dari nama aplikasi yang terdaftar di execution/apps.py.
+- **Allowlist Struktural**: `execution/linux.py` menolak `argv` apa pun yang tidak ada di registry, tepat sebelum `Popen` — bukan hanya di layer tool.
 - **Konfirmasi Dua Langkah**: Perintah destruktif (shutdown, reboot, lock screen) memerlukan jawaban "ya" secara verbal sebelum dieksekusi.
 - **Mic Anti-Echo**: Mikrofon di-mute dan wake word di-reset secara otomatis selama playback TTS agar suara Elysia tidak memicu loop perintah sendiri.
 - **Token-Guard**: Exact match hanya diakui jika token benar-benar ada di STT asli (mencegah LLM "mengoreksi" sendiri tanpa konfirmasi).
 - **Prompt Injection Guard**: System prompt memblok instruksi tersembunyi dari user input.
+- **Supply-chain**: Ref Silero VAD dipin ke tag rilis (`SILERO_VAD_HUB_REF`, default `v5.1.2`), tidak pernah `master`.
+- **Secret Isolation**: Aplikasi yang diluncurkan tidak mewarisi `GOOGLE_API_KEY` / `PICOVOICE_ACCESS_KEY`.
+- **Log Privasi**: Transkrip suara hanya dicatat sebagai panjang + fingerprint di level INFO; teks penuh hanya saat `LOG_LEVEL=DEBUG`. File `.debug_audio/` dibuat `0700` dan WAV `0600`.

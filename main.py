@@ -24,6 +24,7 @@ from audio.wake_word import PorcupineWakeWord
 from core.config import settings
 from core.logger import configure_logging, get_logger, new_session_id
 from core.state import AssistantState, StateMachine
+from core.utils import text_fingerprint
 from execution.apps import extract_app_keys, resolve_app
 from execution.linux import safe_execute
 
@@ -85,7 +86,7 @@ class ElysiaAssistant:
                 wanted = settings.GEMINI_MODEL
                 print(f"\n  ── Resolve model: {wanted} ──")
                 t1 = time.perf_counter()
-                resolved = resolve_model(wanted, available)
+                resolved = resolve_model(wanted)
                 probe_ms = (time.perf_counter() - t1) * 1000
                 if resolved != wanted:
                     print(
@@ -214,11 +215,18 @@ class ElysiaAssistant:
                 has_pending = self._pending is not None
             suffix = "-confirm" if has_pending else ""
             save_debug_audio(self._session_id, audio, suffix=suffix)
+            t_stt = time.perf_counter()
             if had_speech:
                 text = self._stt.transcribe(audio) if len(audio) > 0 else ""
             else:
                 log.info("no_speech_recorded", session_id=self._session_id)
                 text = ""
+            log.info(
+                "stage_stt",
+                stt_ms=round((time.perf_counter() - t_stt) * 1000, 1),
+                had_speech=had_speech,
+                session_id=self._session_id,
+            )
             with self._pending_lock:
                 has_pending = self._pending is not None
             if has_pending:
@@ -240,16 +248,36 @@ class ElysiaAssistant:
                 self._wake_word.resume()
 
     def _run_command(self, text: str, start_e2e: float = 0.0):
-        log.info("processing_user_text", text=text, session_id=self._session_id)
+        log.info(
+            "processing_user_text",
+            text_len=len(text),
+            text_fp=text_fingerprint(text),
+            session_id=self._session_id,
+        )
+        log.debug("processing_user_text_raw", text=text, session_id=self._session_id)
+        t_llm = time.perf_counter()
         try:
             response = chat(text, self._system_prompt)
         except Exception as e:
             log.error("llm_call_failed", error=str(e), error_code="ERR_LLM_TIMEOUT")
             self._respond_error("Maaf, koneksi ke otak Elysia sedang terganggu.")
             return
+        log.info(
+            "stage_llm",
+            llm_ms=round((time.perf_counter() - t_llm) * 1000, 1),
+            session_id=self._session_id,
+        )
         fn_call = extract_function_call(response)
         if fn_call:
+            t_tool = time.perf_counter()
             tool_res: ToolResponse = handle_function_call(fn_call, source_text=text)
+            log.info(
+                "stage_tool",
+                tool_ms=round((time.perf_counter() - t_tool) * 1000, 1),
+                tool_kind=tool_res.kind,
+                source=tool_res.source,
+                session_id=self._session_id,
+            )
             if tool_res.needs_confirmation:
                 with self._pending_lock:
                     self._pending = {
@@ -332,7 +360,7 @@ class ElysiaAssistant:
         with self._pending_lock:
             self._suggest_retries += 1
             retries = self._suggest_retries
-        if retries > 2:
+        if retries > settings.APP_SUGGEST_MAX_RETRIES:
             log.warning("app_suggestion_give_up", raw=pending.get("raw"))
             self._speak_and_idle(
                 "Maaf, Elysia belum bisa mengerti. Silakan coba lagi nanti."

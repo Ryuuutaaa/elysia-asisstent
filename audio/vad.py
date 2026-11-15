@@ -7,6 +7,10 @@ from core.logger import get_logger
 
 log = get_logger("vad")
 
+# Never track `master`: torch.hub executes the repo's hubconf.py on load, so the
+# ref must be immutable. The version is also exposed via SILERO_VAD_HUB_REF.
+SILERO_VAD_DEFAULT_REF = "v5.1.2"
+
 class SileroVAD:
     def __init__(self, threshold: Optional[float] = None):
         self._model = None
@@ -20,19 +24,23 @@ class SileroVAD:
         self._start_time = 0.0
         self._has_speech_started = False
         self._is_active = False
-        self._chunk_size = 512  # Silero VAD (16 kHz) requires exactly 512 samples per call
+        # Silero VAD expects exactly 512 samples at 16 kHz and 256 at 8 kHz.
+        self._chunk_size = 256 if self._sample_rate == 8000 else 512
         self._buffer = np.zeros(0, dtype=np.float32)
 
     def load(self):
         if self._model is not None:
             return
+        if self._sample_rate not in (8000, 16000):
+            raise ValueError(
+                f"Silero VAD hanya mendukung 8000/16000 Hz, bukan {self._sample_rate}"
+            )
         log.info("silero_vad_loading")
-        # torch.hub downloads and executes the repo's hubconf.py on first run;
-        # trust_repo=True skips the confirmation prompt. Set SILERO_VAD_HUB_REF
-        # (e.g. a release tag) to stop tracking `master`.
-        repo = "snakers4/silero-vad"
-        if settings.SILERO_VAD_HUB_REF:
-            repo = f"{repo}:{settings.SILERO_VAD_HUB_REF}"
+        # torch.hub downloads and executes the repo's hubconf.py on first run.
+        # A pinned release tag keeps that code immutable; empty falls back to
+        # the pinned constant above, never to `master`.
+        ref = settings.SILERO_VAD_HUB_REF.strip() or SILERO_VAD_DEFAULT_REF
+        repo = f"snakers4/silero-vad:{ref}"
         try:
             self._model, utils = torch.hub.load(
                 repo_or_dir=repo,

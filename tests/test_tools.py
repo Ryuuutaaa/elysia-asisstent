@@ -7,7 +7,6 @@ from agent.tools import (
     cancel_action,
     execute_confirmed_action,
     is_affirmation,
-    is_denial,
 )
 
 @patch("agent.tools.safe_execute", return_value=MagicMock(success=True, message="opened"))
@@ -119,16 +118,6 @@ def test_is_affirmation_positive(text):
 ])
 def test_is_affirmation_negative(text):
     assert is_affirmation(text) is False
-
-
-@pytest.mark.parametrize("text", ["tidak", "gak", "nggak", "cukup", "selesai", "gausah", "stop", "sudah"])
-def test_is_denial_positive(text):
-    assert is_denial(text) is True
-
-
-@pytest.mark.parametrize("text", ["ya", "iya, buka spotify", "buka terminal", "", "   ", "ya tidak"])
-def test_is_denial_negative(text):
-    assert is_denial(text) is False
 
 
 @pytest.mark.parametrize("text,expected", [

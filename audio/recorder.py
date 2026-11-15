@@ -11,6 +11,26 @@ from core.logger import get_logger
 
 log = get_logger("recorder")
 
+_ORIGINAL_PULSE_SOURCE: Optional[str] = None
+_PULSE_SOURCE_CAPTURED = False
+
+
+def _remember_pulse_source():
+    global _ORIGINAL_PULSE_SOURCE, _PULSE_SOURCE_CAPTURED
+    if not _PULSE_SOURCE_CAPTURED:
+        _ORIGINAL_PULSE_SOURCE = os.environ.get("PULSE_SOURCE")
+        _PULSE_SOURCE_CAPTURED = True
+
+
+def restore_pulse_source():
+    """Undo the process-wide PULSE_SOURCE override once capture is done."""
+    if not _PULSE_SOURCE_CAPTURED:
+        return
+    if _ORIGINAL_PULSE_SOURCE is None:
+        os.environ.pop("PULSE_SOURCE", None)
+    else:
+        os.environ["PULSE_SOURCE"] = _ORIGINAL_PULSE_SOURCE
+
 def _run_pactl(args: list[str]) -> Optional[str]:
     try:
         result = subprocess.run(
@@ -77,6 +97,7 @@ def _find_virtual_input_index() -> Optional[int]:
 
 
 def find_device_index(source_type: str) -> Optional[int]:
+    _remember_pulse_source()
     for attempt in range(3):
         try:
             source_name = resolve_pulse_source(source_type)
@@ -126,7 +147,7 @@ def save_debug_audio(session_id: str, audio: np.ndarray, suffix: str = "", max_f
         return None
 
     debug_dir = Path(".debug_audio")
-    debug_dir.mkdir(parents=True, exist_ok=True)
+    debug_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = debug_dir / f"req-{session_id}{suffix}.wav"
     try:
         import wave
@@ -136,6 +157,8 @@ def save_debug_audio(session_id: str, audio: np.ndarray, suffix: str = "", max_f
             wf.setsampwidth(2)
             wf.setframerate(settings.SAMPLE_RATE)
             wf.writeframes(audio.astype(np.int16).tobytes())
+
+        os.chmod(path, 0o600)
 
         files = sorted(debug_dir.glob("req-*.wav"), key=lambda p: p.stat().st_mtime)
         for old in files[:-max_files]:
@@ -193,6 +216,7 @@ class AudioRecorder:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+            restore_pulse_source()
             log.info("audio_stream_stopped")
 
     def start_recording(self):

@@ -47,15 +47,6 @@ def is_affirmation(text: str) -> bool:
     return bool(words & CONFIRM_WORDS)
 
 
-def is_denial(text: str) -> bool:
-    """Negative answer to a yes/no question (e.g. 'tidak ada', 'sudah cukup').
-    An explicit confirmation word wins over a denial word ('ya, tidak' -> not denial)."""
-    words = set(re.findall(r"\w+", text.lower()))
-    if not words:
-        return False
-    return bool(words & DENY_WORDS) and not bool(words & CONFIRM_WORDS)
-
-
 FOLLOWUP_FILLER = {
     "tolong", "silakan", "mohon", "coba", "saja", "aja", "dong", "deh", "lah",
     "nih", "sih", "kok", "terima", "kasih", "makasih", "thanks", "thank",

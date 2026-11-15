@@ -1,4 +1,6 @@
+import os
 from unittest.mock import patch
+import audio.recorder as recorder
 from audio.recorder import resolve_pulse_source
 
 SOURCES = [
@@ -56,3 +58,29 @@ def test_headset_none_when_no_match():
     fake = _pactl_with_sources(["alsa_output.usb-x.monitor", "alsa_input.builtin-mic"])
     with patch("audio.recorder._run_pactl", side_effect=fake):
         assert resolve_pulse_source("headset") is None
+
+
+def test_restore_pulse_source_puts_original_back(monkeypatch):
+    monkeypatch.setenv("PULSE_SOURCE", "original-source")
+    monkeypatch.setattr(recorder, "_PULSE_SOURCE_CAPTURED", False)
+    monkeypatch.setattr(recorder, "_ORIGINAL_PULSE_SOURCE", None)
+
+    recorder._remember_pulse_source()
+    os.environ["PULSE_SOURCE"] = "resolved-source"
+
+    recorder.restore_pulse_source()
+
+    assert os.environ["PULSE_SOURCE"] == "original-source"
+
+
+def test_restore_pulse_source_removes_when_originally_unset(monkeypatch):
+    monkeypatch.delenv("PULSE_SOURCE", raising=False)
+    monkeypatch.setattr(recorder, "_PULSE_SOURCE_CAPTURED", False)
+    monkeypatch.setattr(recorder, "_ORIGINAL_PULSE_SOURCE", None)
+
+    recorder._remember_pulse_source()
+    os.environ["PULSE_SOURCE"] = "resolved-source"
+
+    recorder.restore_pulse_source()
+
+    assert "PULSE_SOURCE" not in os.environ

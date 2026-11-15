@@ -1,5 +1,4 @@
 import asyncio
-import io
 import tempfile
 import time
 import sounddevice as sd
@@ -88,7 +87,7 @@ def synthesize_piper(text: str) -> Optional[bytes]:
     try:
         start = time.perf_counter()
         result = subprocess.run(
-            ["piper", "--model", model_path, "--output-raw"],
+            ["piper", f"--model={model_path}", "--output-raw"],
             input=text.encode("utf-8"),
             capture_output=True,
             timeout=4.0,

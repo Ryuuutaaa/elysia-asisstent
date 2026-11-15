@@ -16,7 +16,7 @@ def test_vad_silence_detected_returns_false_before_silence_threshold(synthetic_s
     mock_model.return_value.item.return_value = 0.1
     vad._model = mock_model
     vad.reset()
-    assert vad.process_frame(synthetic_silence[:512]) in (True, False)
+    assert vad.process_frame(synthetic_silence[:512]) is False
 
 def _make_vad_with_speech_prob(prob: float) -> SileroVAD:
     vad = SileroVAD()
@@ -195,3 +195,61 @@ def test_stt_uses_configured_language(monkeypatch):
     stt.transcribe(audio)
     _, kwargs = stt._model.transcribe.call_args
     assert kwargs.get("language") == "en"
+
+
+def test_vad_chunk_size_matches_sample_rate(monkeypatch):
+    from core.config import settings
+    monkeypatch.setattr(settings, "SAMPLE_RATE", 8000)
+    assert SileroVAD()._chunk_size == 256
+    monkeypatch.setattr(settings, "SAMPLE_RATE", 16000)
+    assert SileroVAD()._chunk_size == 512
+
+
+def test_vad_load_rejects_unsupported_sample_rate(monkeypatch):
+    from core.config import settings
+    monkeypatch.setattr(settings, "SAMPLE_RATE", 44100)
+    with pytest.raises(ValueError):
+        SileroVAD().load()
+
+
+def test_silero_load_pins_release_ref(monkeypatch):
+    import audio.vad as vad_mod
+
+    captured = {}
+
+    class FakeModel:
+        def eval(self):
+            return None
+
+    def fake_hub(**kwargs):
+        captured.update(kwargs)
+        return FakeModel(), {}
+
+    monkeypatch.setattr(vad_mod.torch.hub, "load", fake_hub)
+    monkeypatch.setattr(vad_mod.settings, "SILERO_VAD_HUB_REF", "")
+
+    vad_mod.SileroVAD().load()
+
+    assert captured["repo_or_dir"] == f"snakers4/silero-vad:{vad_mod.SILERO_VAD_DEFAULT_REF}"
+    assert "master" not in captured["repo_or_dir"]
+
+
+def test_silero_load_honors_custom_ref(monkeypatch):
+    import audio.vad as vad_mod
+
+    captured = {}
+
+    class FakeModel:
+        def eval(self):
+            return None
+
+    def fake_hub(**kwargs):
+        captured.update(kwargs)
+        return FakeModel(), {}
+
+    monkeypatch.setattr(vad_mod.torch.hub, "load", fake_hub)
+    monkeypatch.setattr(vad_mod.settings, "SILERO_VAD_HUB_REF", "v5.0.0")
+
+    vad_mod.SileroVAD().load()
+
+    assert captured["repo_or_dir"] == "snakers4/silero-vad:v5.0.0"

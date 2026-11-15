@@ -46,3 +46,13 @@ def test_suffix_avoids_overwrite(tmp_path, monkeypatch):
     debug_dir = tmp_path / ".debug_audio"
     assert (debug_dir / "req-s1.wav").exists()
     assert (debug_dir / "req-s1-confirm.wav").exists()
+
+
+def test_debug_audio_file_is_private(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(settings, "DEBUG_RECORD_AUDIO", True)
+
+    path = save_debug_audio("secret", np.zeros(16, dtype=np.int16))
+
+    assert path is not None
+    assert (os.stat(path).st_mode & 0o777) == 0o600

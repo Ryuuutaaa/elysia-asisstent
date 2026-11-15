@@ -459,3 +459,25 @@ def test_speak_and_idle_clears_followup_mode(monkeypatch):
 
     assert assistant._await_mode is None
     assert assistant._fsm.current_state == AssistantState.IDLE
+
+
+def test_run_command_logs_fingerprint_not_raw_transcript(monkeypatch):
+    assistant = ElysiaAssistant()
+    fake_log = MagicMock()
+    monkeypatch.setattr("main.log", fake_log)
+    monkeypatch.setattr(assistant, "_respond_error", lambda text: None)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("llm down")
+
+    monkeypatch.setattr("main.chat", boom)
+
+    assistant._run_command("buka brave browser")
+
+    event = next(
+        call for call in fake_log.info.call_args_list
+        if call.args and call.args[0] == "processing_user_text"
+    )
+    assert "text" not in event.kwargs
+    assert event.kwargs["text_len"] == len("buka brave browser")
+    assert event.kwargs["text_fp"]

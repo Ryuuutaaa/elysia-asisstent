@@ -4,12 +4,6 @@ from typing import Optional
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
-from tenacity import (
-    retry,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from core.config import settings
 from core.logger import get_logger
@@ -34,26 +28,16 @@ def scan_available_models(api_key: Optional[str] = None) -> list[str]:
         return []
 
 
-def resolve_model(preferred: Optional[str] = None, available: Optional[list[str]] = None) -> str:
+def resolve_model(preferred: Optional[str] = None) -> str:
     global _resolved_model
     if _resolved_model:
         return _resolved_model
 
     want = preferred or settings.GEMINI_MODEL
     candidates = [want]
-    try:
-        if available is None:
-            available = scan_available_models()
-        available_set = set(available)
-        fallbacks = ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"]
-        for fb in fallbacks:
-            if fb not in candidates and fb in available_set:
-                candidates.append(fb)
-        for fb in fallbacks:
-            if fb not in candidates:
-                candidates.append(fb)
-    except Exception:
-        pass
+    for fallback in ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"]:
+        if fallback not in candidates:
+            candidates.append(fallback)
 
     probe_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
     last_err = None
@@ -155,15 +139,35 @@ def _is_retryable(exc: BaseException) -> bool:
     return True
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=3),
-    retry=retry_if_exception(_is_retryable),
-    reraise=True,
-)
+_MIN_ATTEMPT_SEC = 0.3
+
+
 def chat(user_text: str, system_prompt: str) -> types.GenerateContentResponse:
-    timeout_sec = settings.LLM_REQUEST_TIMEOUT_MS / 1000
-    return run_with_timeout(lambda: _request(user_text, system_prompt), timeout_sec)
+    deadline = time.monotonic() + settings.LLM_TOTAL_BUDGET_MS / 1000
+    last: Optional[BaseException] = None
+    for attempt in range(settings.LLM_MAX_ATTEMPTS):
+        remaining = deadline - time.monotonic()
+        if remaining <= _MIN_ATTEMPT_SEC:
+            break
+        try:
+            return run_with_timeout(
+                lambda: _request(user_text, system_prompt),
+                min(remaining, settings.LLM_REQUEST_TIMEOUT_MS / 1000),
+                budget="llm",
+            )
+        except Exception as e:
+            if not _is_retryable(e):
+                raise
+            last = e
+            log.warning(
+                "llm_retry",
+                attempt=attempt + 1,
+                remaining_ms=round(remaining * 1000),
+                error=str(e)[:200],
+            )
+    if last is not None:
+        raise last
+    raise TimeoutError("LLM budget habis sebelum percobaan pertama")
 
 
 def extract_function_call(
@@ -212,6 +216,7 @@ def choose_app(raw_name: str, source_text: str = "") -> tuple[str, Optional[str]
         return "none", None
     names = list_allowed_apps()
     heard = (source_text or "").strip() or raw
+    deadline = time.monotonic() + settings.LLM_TOTAL_BUDGET_MS / 1000
     prompt = (
         f"User mengucapkan: {heard!r}.\n"
         f"Kata aplikasi yang tertangkap: {raw!r} (mungkin salah dengar atau typo).\n"
@@ -220,9 +225,14 @@ def choose_app(raw_name: str, source_text: str = "") -> tuple[str, Optional[str]
         "Jawab HANYA nama tersebut, atau NONE bila tidak ada yang cocok."
     )
     for attempt in range(_CHOOSE_APP_ATTEMPTS):
+        remaining = deadline - time.monotonic()
+        if remaining <= _MIN_ATTEMPT_SEC:
+            break
         try:
             response = run_with_timeout(
-                lambda: _plain_generate(prompt), settings.LLM_REQUEST_TIMEOUT_MS / 1000
+                lambda: _plain_generate(prompt),
+                min(remaining, settings.LLM_REQUEST_TIMEOUT_MS / 1000),
+                budget="llm",
             )
         except Exception as e:
             log.warning("choose_app_failed", error=str(e), attempt=attempt + 1)
