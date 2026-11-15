@@ -59,7 +59,8 @@ main.py
   │
   ├─ 6. Load Silero VAD Model
   │     audio/vad.py → torch.hub
-  │     ├─ torch.hub.load("snakers4/silero-vad", "silero_vad")
+  │     ├─ torch.hub.load("snakers4/silero-vad:v5.1.2", "silero_vad")
+  │     ├─ Ref selalu tag rilis (SILERO_VAD_HUB_REF, default v5.1.2); tidak pernah master
   │     └─ Cache: model di-download sekali, cache di ~/.cache/torch/hub/
   │
   ├─ 7. Init TTS Providers
@@ -70,8 +71,9 @@ main.py
   │
   ├─ 8. Init Gemini LLM Client
   │     agent/llm.py → google-genai SDK
-  │     ├─ genai.configure(api_key=GOOGLE_API_KEY)
-  │     ├─ Model: gemini-2.0-flash
+  │     ├─ client = genai.Client(api_key=GOOGLE_API_KEY)
+  │     ├─ Model: resolve_model() memprobe GEMINI_MODEL lalu fallback
+  │     │   (gemini-flash-latest → gemini-flash-lite-latest → gemini-2.5-flash-lite)
   │     └─ System prompt di-load dari agent/prompt.py
   │
   ├─ 9. Allowlist Registry (dibaca saat build_system_prompt)
@@ -88,7 +90,7 @@ main.py
   └─ ★ Sistem siap. Masuk IDLE loop.
 ```
 
-**Total startup budget: ≤ 12 detik** (Whisper ≤8s + Porcupine ≤1s + lainnya ≤3s).
+**Total startup budget: ≤ 12 detik** (Whisper ≤8s + wake-word engine ≤1s + lainnya ≤3s).
 
 ---
 
@@ -183,7 +185,7 @@ Timeline (target E2E ≤ 3.0s dari user selesai bicara):
           │  └────────────────────────────────────────────────────────┘
           │
           │  ┌─ Stage 2: LLM Intent + Tool Call (≤1.2s budget) ──────┐
-          │  │  text → Gemini 3.8 Flash (google-genai SDK)            │
+          │  │  text → Gemini Flash (google-genai SDK)                │
           │  │                                                        │
           │  │  System Prompt (agent/prompt.py):                      │
           │  │    "Kamu adalah Elysia, asisten suara. Kamu hanya      │
@@ -270,13 +272,13 @@ Timeline (target E2E ≤ 3.0s dari user selesai bicara):
        ▲                                  ▲                              │
        │                                  │                    FunctionCall
        │ int16 frames                     │ numpy.ndarray       {"tool": "open_application",
-       │ (512 samples/frame)              │ (same buffer)        "args": {"app_name": "..."}}
+       │ (512 samples @16kHz / 256 @8kHz) │ (same buffer)        "args": {"app_name": "..."}}
        │                                  │                              │
 ┌──────┴───────┐                   ┌──────┴───────┐               ┌──────▼───────┐
 │              │  keyword_index    │              │               │              │
 │ wake_word.py │ ────────────────► │   vad.py     │               │  tools.py    │
-│ (Porcupine   │  (0 = detected)  │ (Silero VAD  │               │ (function    │
-│  .process())  │                   │  .predict()) │               │  registry)   │
+│ (openWakeWord│  (skor ≥ ambang) │ (Silero VAD  │               │ (function    │
+│  /Porcupine) │                   │  .predict()) │               │  registry)   │
 └──────────────┘                   └──────────────┘               └──────┬───────┘
                                                                          │
                                                           app_name: str  │
@@ -321,18 +323,18 @@ Timeline (target E2E ≤ 3.0s dari user selesai bicara):
 PROCESSING state: STT selesai, kirim teks ke Gemini
           │
           ├─ Request ke Gemini API
-          │   ├─ Timeout: 3.5 detik per request
-          │   ├─ Retry policy (tenacity):
-          │   │   @retry(stop=stop_after_attempt(3),
-          │   │          wait=wait_exponential(multiplier=1, min=1, max=3))
+          │   ├─ Timeout per request: LLM_REQUEST_TIMEOUT_MS (default 2500 ms)
+          │   ├─ Retry policy (deadline-based, tanpa tenacity):
+          │   │   deadline = now + LLM_TOTAL_BUDGET_MS (default 4500 ms)
+          │   │   loop max LLM_MAX_ATTEMPTS (default 2)
           │   │
-          │   ├─ Attempt 1: timeout/5xx → wait 1s
-          │   ├─ Attempt 2: timeout/5xx → wait 2s
-          │   └─ Attempt 3: timeout/5xx → GAGAL
+          │   ├─ Attempt 1: timeout/5xx → sisa budget > 300ms? ulangi
+          │   ├─ Attempt 2: timeout/5xx → budget habis / attempt habis
+          │   └─ Error 4xx (kecuali 429) → langsung gagal, tanpa retry
           │
-          ├─ Setelah 3x gagal:
-          │   ├─ Log: {"event": "llm_failed", "error_code": "ERR_LLM_TIMEOUT",
-          │   │        "attempts": 3, "total_retry_ms": 9500}
+          ├─ Setelah gagal:
+          │   ├─ Log: {"event": "llm_retry"/"llm_call_failed",
+          │   │        "error_code": "ERR_LLM_TIMEOUT", "remaining_ms": ...}
           │   ├─ Response text = "Maaf, koneksi ke otak Elysia sedang terganggu."
           │   └─ Transisi tetap ke SPEAKING (verbal error)
           │
@@ -420,6 +422,9 @@ PROCESSING state: Gemini mengembalikan tool call
           │
           ├─ Allowlist lookup di execution/apps.py:
           │   "terminal hack xyz" → NOT FOUND
+          │
+          ├─ Jika tool memaksa mengeksekusi argv arbitrer, execution/linux.py
+          │   memvalidasi ulang: argv ∉ _ALLOWED_ARGV → "Perintah tidak diizinkan."
           │
           ├─ Log: {"event": "tool_rejected",
           │        "error_code": "ERR_TOOL_NOT_ALLOWED",
@@ -570,7 +575,7 @@ Catatan: Semua resource di-cleanup via try/finally atau atexit handler
 │   └─ audio/stt.py ────────── faster-whisper                  │
 │   └─ audio/tts.py ────────── edge-tts, piper-tts             │
 │                                                             │
-│   └─ agent/llm.py ────────── google-genai, tenacity          │
+│   └─ agent/llm.py ────────── google-genai (retry: deadline-based)   │
 │   └─ agent/tools.py ─────── (internal: execution/apps.py)    │
 │   └─ agent/prompt.py ────── (plain text, no deps)            │
 │                                                             │
@@ -594,6 +599,6 @@ System deps (OS-level, bukan pip):
 |---|---|---|---|
 | `ERR_AUDIO_INPUT` | Startup / IDLE | Device mic tidak ditemukan / unplugged | "Maaf, Elysia tidak bisa mengakses mikrofon." |
 | `ERR_STT_EMPTY` | PROCESSING | Audio hanya noise / batuk / terlalu pendek | "Maaf, Elysia tidak mendengar perintahmu. Coba ulangi." |
-| `ERR_LLM_TIMEOUT` | PROCESSING | Gemini API timeout setelah 3x retry | "Maaf, koneksi ke otak Elysia sedang terganggu." |
+| `ERR_LLM_TIMEOUT` | PROCESSING | Gemini tidak selesai dalam `LLM_TOTAL_BUDGET_MS` (default 4.5s) | "Maaf, koneksi ke otak Elysia sedang terganggu." |
 | `ERR_TOOL_NOT_ALLOWED` | PROCESSING | App tidak ada di allowlist | "Maaf, aplikasi X tidak ada dalam daftar yang diizinkan." |
 | `ERR_TTS_SYNTHESIS` | SPEAKING | Edge TTS + Piper keduanya gagal | Terminal log fallback (tidak ada audio) |

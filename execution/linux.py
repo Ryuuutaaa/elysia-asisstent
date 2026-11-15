@@ -2,6 +2,7 @@ import os
 import subprocess
 import shutil
 import time
+from dataclasses import dataclass
 
 from core.logger import get_logger
 from execution.apps import APP_REGISTRY, DESTRUCTIVE_ACTIONS
@@ -18,11 +19,11 @@ _ALLOWED_ARGV: frozenset[tuple[str, ...]] = frozenset(
 )
 
 
+@dataclass
 class ExecutionResult:
-    def __init__(self, success: bool, message: str, latency_ms: float):
-        self.success = success
-        self.message = message
-        self.latency_ms = latency_ms
+    success: bool
+    message: str
+    latency_ms: float
 
 
 def is_allowlisted(argv: list[str]) -> bool:

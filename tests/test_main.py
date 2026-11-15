@@ -1,9 +1,9 @@
 import numpy as np
 from unittest.mock import MagicMock
 
-from agent.tools import ToolResponse
+from agent.tools import PendingAction, ToolKind, ToolResponse
 from core.config import settings
-from core.state import AssistantState
+from core.state import AssistantState, StateMachine
 from main import ElysiaAssistant
 
 
@@ -17,6 +17,30 @@ def test_pending_and_retries_initialized():
     assistant = ElysiaAssistant()
     assert assistant._pending is None
     assert assistant._suggest_retries == 0
+
+
+def test_constructor_accepts_injected_collaborators():
+    fsm = StateMachine(cooldown_sec=0.05)
+    vad, stt, wake = MagicMock(), MagicMock(), MagicMock()
+
+    assistant = ElysiaAssistant(fsm=fsm, vad=vad, stt=stt, wake_word=wake)
+
+    assert assistant._fsm is fsm
+    assert assistant._vad is vad
+    assert assistant._stt is stt
+    assert assistant._wake_word is wake
+
+
+def test_wake_rebuilds_system_prompt_from_registry(monkeypatch):
+    assistant = ElysiaAssistant()
+    assistant._recorder = MagicMock()
+    assistant._wake_word = MagicMock()
+    assistant._start_listening = MagicMock()
+    monkeypatch.setattr("main.build_system_prompt", lambda: "PROMPT-V2")
+
+    assistant._on_wake_detected()
+
+    assert assistant._system_prompt == "PROMPT-V2"
 
 
 def test_affirmative_first_command_does_not_crash(monkeypatch):
@@ -40,13 +64,11 @@ def test_affirmative_first_command_does_not_crash(monkeypatch):
 
 
 def _destructive_pending():
-    return {
-        "kind": "destructive",
-        "action": "shutdown",
-        "argv": ["systemctl", "poweroff"],
-        "raw": "",
-        "source": "",
-    }
+    return PendingAction(
+        kind=ToolKind.DESTRUCTIVE,
+        action="shutdown",
+        argv=["systemctl", "poweroff"],
+    )
 
 
 def test_confirmation_affirm_executes(monkeypatch):
@@ -241,13 +263,13 @@ def test_followup_affirmation_with_command_runs_it(monkeypatch):
 
 
 def _app_pending(action="brave browser", argv=None):
-    return {
-        "kind": "app_suggestion",
-        "action": action,
-        "argv": argv or ["brave-browser"],
-        "raw": "breif",
-        "source": "fuzzy",
-    }
+    return PendingAction(
+        kind=ToolKind.APP_SUGGESTION,
+        action=action,
+        argv=argv or ["brave-browser"],
+        raw="breif",
+        source="fuzzy",
+    )
 
 
 def test_app_suggestion_affirm_opens_candidate(monkeypatch):

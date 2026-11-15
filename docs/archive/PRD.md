@@ -10,50 +10,52 @@ Membangun asisten pribadi _speech-to-speech_ bernama **Elysia** yang berjalan di
 
 ## 2. Spesifikasi Audio
 
-- **Format**: WAV, 16kHz, mono, 16-bit PCM — wajib untuk faster-whisper dan Porcupine.
+- **Format**: WAV, 16kHz, mono, 16-bit PCM — wajib untuk faster-whisper dan wake-word engine (frame 512 sampel @16kHz).
 - **Input sources** (pilih 1 via config `.env` / `pydantic-settings`):
   - `mic` — mikrofon laptop/headset (default).
   - `speaker` — audio mic dari speaker via PipeWire loopback (`alsa_output...monitor`), di-enumerate saat startup (`pactl list short sources`), tidak hardcode.
   - `headset` — headset USB/BT dengan mic bawaan.
 - **Output**: default sistem (`default` sink) atau sink tertentu jika ditentukan.
 - **Volume**: normalize input ke −6 dBFS sebelum Whisper; normalize TTS output agar konsisten.
-- **Sampling**: force 16kHz, mono, 16-bit PCM di recorder (resample otomatis jika device mengeluarkan 48kHz).
+- **Sampling**: recorder meminta 16kHz, mono, 16-bit PCM langsung ke PortAudio/PipeWire; tidak ada resampler manual. Jika device tidak bisa menyediakan 16kHz, stream gagal dibuka dan startup berhenti dengan `ERR_AUDIO_INPUT`.
 
 ## 3. Komponen & Tech Stack
 
 1. **Audio I/O**: `sounddevice` + PipeWire/ALSA.
-2. **Wake Word Engine**: Porcupine (Picovoice)
+2. **Wake Word Engine**: openWakeWord (default, offline, tanpa API key) dengan fallback runtime ke Porcupine (Picovoice)
    - Custom keyword `.ppn` ("Hei Elysia"), butuh `PICOVOICE_ACCESS_KEY`.
-   - Alternatif offline tanpa API key: `openWakeWord` (default). Model bawaan: `hey_jarvis` → frasa pemicu **"Hey Jarvis"**.
+   - Model bawaan openWakeWord: `hey_jarvis` → frasa pemicu **"Hey Jarvis"**.
    - Frasa **"Hei Elysia"** butuh model openWakeWord custom (`OPENWAKEWORD_MODEL_PATH`) atau keyword Porcupine `.ppn` (`PICOVOICE_ACCESS_KEY`).
     - **Cooldown**: `COOLDOWN_SEC = 2–3` setelah trigger untuk mencegah trigger berulang saat TTS aktif.
 3. **VAD / Endpointing**: Silero VAD
    - Mendeteksi silence (threshold 700–900ms) untuk stop recording.
 4. **Speech-to-Text (STT)**: faster-whisper (CTranslate2)
    - Model `small` (int8, CPU, ~500MB RAM) atau `medium`.
-5. **LLM & Orkestrasi**: Gemini 3.8 Flash via SDK `google-genai`
+5. **LLM & Orkestrasi**: Gemini Flash via SDK `google-genai` (model dipilih dari `GEMINI_MODEL` + fallback otomatis)
    - Direct function calling loop tanpa over-engineering (LangGraph opsional hanya bila alur tool multi-step).
 6. **Execution Layer**: Python `subprocess` + allowlist (`shell=False`).
-   - Adapter platform: `hyprctl` untuk workspace/window management di Hyprland.
+   - Adapter `hyprctl` belum diimplementasikan; yang aktif hanya peluncuran app allowlist dan aksi sistem (shutdown/reboot/lock).
 7. **Text-to-Speech (TTS)**: Edge TTS (`id-ID-ArdiNeural` / `id-ID-GadisNeural`) dengan automatic fallback ke Piper TTS offline (`id_ID news_tts`).
 
 ## 4. Keamanan (Wajib)
 
 - **Input Untrusted**: Output LLM dianggap untrusted input.
 - **Pattern Perintah**: Format terstruktur `"buka <nama_app>"`, ditolak jika di luar allowlist.
-- **Trigger Konfirmasi Verbal**: Aksi berisiko/destruktif (`rm`, `shutdown`, `reboot`, `apt`, `pip install --system`) wajib konfirmasi verbal dua langkah ("Yakin ingin mematikan sistem?").
+- **Trigger Konfirmasi Verbal**: Aksi berisiko/destruktif (`shutdown`, `reboot`, `lock screen`) wajib konfirmasi verbal dua langkah ("Yakin ingin mematikan sistem?").
 - **Strict Allowlist**: Registry mapping nama ramah → executable konkret. Tidak ada eksekusi free-form bash string.
+- **Allowlist Struktural**: `execution/linux.py` memvalidasi ulang `argv` terhadap registry tepat sebelum `Popen`, sehingga pemanggil baru tidak bisa melewati boundary.
+- **Isolasi Secret**: Proses anak tidak mewarisi `GOOGLE_API_KEY` / `PICOVOICE_ACCESS_KEY`.
 - **Execution Guard**: Wajib `shell=False` dan validasi argumen list pada semua pemanggilan `subprocess.run`.
 
 ## 5. Alur Sistem (System Flow)
 
 State machine utama: `IDLE → LISTENING → PROCESSING → SPEAKING → IDLE`
 
-1. **IDLE**: Porcupine mendengarkan stream mic pasif (low CPU/RAM).
-2. **LISTENING**: Porcupine mendeteksi wake word → stream audio diarahkan ke buffer → Silero VAD mendeteksi silence (user selesai bicara) → stop buffer.
+1. **IDLE**: wake-word engine mendengarkan stream mic pasif (low CPU/RAM).
+2. **LISTENING**: wake-word engine mendeteksi wake word → stream audio diarahkan ke buffer → Silero VAD mendeteksi silence (user selesai bicara) → stop buffer.
 3. **PROCESSING**: Audio diterjemahkan oleh faster-whisper → teks dikirim ke Gemini → Gemini memanggil function tool via allowlist → tool dieksekusi.
-4. **SPEAKING**: Gemini menyusun kalimat balasan → TTS mensintesis audio → playback audio. **Mic dan Porcupine di-mute/pause** agar tidak terjadi acoustic feedback loop.
-5. **Kembali ke IDLE**: Cooldown aktif selama 2 detik sebelum Porcupine kembali menerima trigger baru.
+4. **SPEAKING**: Gemini menyusun kalimat balasan → TTS mensintesis audio → playback audio. **Mic dan wake-word engine di-mute/pause** agar tidak terjadi acoustic feedback loop.
+5. **Kembali ke IDLE**: Cooldown aktif selama 2 detik sebelum wake-word engine kembali menerima trigger baru.
 
 ---
 
@@ -61,15 +63,15 @@ State machine utama: `IDLE → LISTENING → PROCESSING → SPEAKING → IDLE`
 
 | Fitur | Deskripsi | Kriteria Accept (Detail & Terukur) |
 |---|---|---|
-| Wake word "Hei Elysia" | Porcupine keyword custom `.ppn` | False positive < 5% dalam 100 jam standby; false negative < 3% pada jarak ≤1.5m (SNR >15 dB); re-trigger diblokir selama cooldown 2–3s setelah transisi SPEAKING |
+| Wake word "Hei Elysia" | openWakeWord (default) / Porcupine keyword custom `.ppn` | False positive < 5% dalam 100 jam standby; false negative < 3% pada jarak ≤1.5m (SNR >15 dB); skor ambang dibaca dari `WAKE_WORD_THRESHOLD` (default 0.30); re-trigger diblokir selama cooldown 2–3s setelah transisi SPEAKING |
 | Rekam & VAD Endpointing | Mic → Silero VAD (silence threshold 700–900ms, max duration 15s) | VAD silence detection latency ≤ 300ms setelah user diam; 0 kasus early cut-off pada jeda bicara wajar (uji 50 sampel kalimat beruntun) |
 | STT Transkripsi | faster-whisper `small` int8 | Latency STT ≤ 1.0 detik untuk rekaman ≤ 5 detik; Word Error Rate (WER) < 10% untuk pola perintah Indonesia standar |
 | Latency Budget E2E | Total waktu dari user selesai bicara hingga Elysia mulai bersuara | **E2E Latency ≤ 2.5–3.0 detik (p95)** diukur via metric `structlog` (`latency_ms`). Breakdown budget: VAD stop (≤300ms) + STT (≤1000ms) + Gemini (≤1200ms) + TTS buffer first-byte (≤500ms) |
 | Intent & Tool Execution | Gemini function calling → allowlist → `subprocess(shell=False)` | Perintah valid dieksekusi < 300ms pasca LLM response; perintah di luar allowlist ditolak dengan verbal; zero audit findings untuk `shell=True` |
-| Konfirmasi Aksi Berisiko | Guard dua langkah untuk perintah destruktif (`shutdown`, `rm`, `reboot`, dll.) | 0 eksekusi perintah destruktif tanpa konfirmasi verbal positif ("ya" / "lanjutkan"); membatalkan aksi jika jawaban negatif atau timeout 5 detik |
+| Konfirmasi Aksi Berisiko | Guard dua langkah untuk perintah destruktif (`shutdown`, `reboot`, `lock screen`) | 0 eksekusi perintah destruktif tanpa konfirmasi verbal positif ("ya" / "lanjutkan"); membatalkan aksi jika jawaban negatif atau timeout 5 detik |
 | Multi-source Audio | Switch `mic`, `speaker` (PipeWire loopback), `headset` | Startup otomatis meng-enumerate `pactl list short sources`; switch source via `.env` tanpa reload source code |
 | Anti-echo Loop | Mic mute + Porcupine paused selama playback TTS | 0 self-trigger loop dalam 100 siklus respons berulang pada volume speaker 75% |
-| Network Outage: Gemini | Kegagalan jaringan / 5xx / timeout pada Google AI Studio | Retry 2x (exponential backoff 1s, 2s via `tenacity`, timeout 3.0s per request); fallback verbal: "Maaf, koneksi ke otak Elysia sedang terganggu" tanpa crash daemon |
+| Network Outage: Gemini | Kegagalan jaringan / 5xx / timeout pada Google AI Studio | Retry maksimum `LLM_MAX_ATTEMPTS=2` dalam total budget `LLM_TOTAL_BUDGET_MS=4500`, timeout per request `LLM_REQUEST_TIMEOUT_MS=2500`; 4xx (kecuali 429) tidak di-retry; fallback verbal: "Maaf, koneksi ke otak Elysia sedang terganggu" tanpa crash daemon |
 | Network Outage: Edge TTS | Edge TTS timeout (5.0s) atau koneksi WebSocket putus | Retry 1x; otomatis fallback ke Piper TTS (offline) dalam waktu < 800ms; respons suara tetap keluar |
 | Audio Hardware Failure | Device audio hilang/unplugged saat runtime | Error di-catch graceful; retry re-enumeration 3x (interval 1s); jika tetap gagal log `CRITICAL` dan fallback ke system default source |
 | State Recovery | Error tak terduga pada stage manapun (STT/LLM/TTS) | State machine selalu kembali ke `IDLE` dalam waktu ≤ 2.0 detik; mengeluarkan verbal error message jika memungkinkan |
@@ -104,7 +106,7 @@ elysia-assistant/
 │
 ├── agent/
 │   ├── __init__.py
-│   ├── llm.py              # Gemini 3.8 Flash SDK client + tenacity retry wrapper
+│   ├── llm.py              # Gemini Flash SDK client + deadline-based retry
 │   ├── tools.py            # Function registry allowlist
 │   └── prompt.py           # System prompt Elysia & injection guardrail
 │
@@ -140,7 +142,7 @@ elysia-assistant/
 ## 10. Urutan Implementasi (Milestones)
 
 1. **Milestone 1 (Core & Safe Execution)**: Config pydantic-settings, State Machine FSM, Allowlist apps, dan test suite dasar.
-2. **Milestone 2 (Agent & LLM Loop)**: Integrasi Gemini 3.8 Flash + function calling allowlist via text terminal.
+2. **Milestone 2 (Agent & LLM Loop)**: Integrasi Gemini Flash + function calling allowlist via text terminal.
 3. **Milestone 3 (TTS & Audio Feedback)**: Integrasi Edge TTS + Piper offline fallback + audio playback controller.
 4. **Milestone 4 (Audio Capture, VAD & STT)**: Buffer sounddevice + Silero VAD endpointing + faster-whisper transcription.
 5. **Milestone 5 (Wake Word & Full E2E)**: Porcupine integration, mic-mute anti-echo, latency benchmarking, dan error recovery polish.
@@ -174,7 +176,7 @@ Pengujian pipeline voice assistant dirancang agar 100% dapat dijalankan pada lin
    - Menguji faster-whisper dengan mock CTranslate2 model untuk memverifikasi parser teks dan output encoding UTF-8.
 
 4. **Resilience & Fault Injection (`tests/test_resilience.py`)**:
-   - Simulasi `httpx.TimeoutException` dan HTTP 503 pada panggilan Gemini untuk memverifikasi retry policy `tenacity`.
+   - Simulasi `httpx.TimeoutException` dan HTTP 503 pada panggilan Gemini untuk memverifikasi retry policy deadline-based.
    - Simulasi Edge TTS failure untuk memastikan fallback instan ke Piper TTS terpanggil.
 
 ---
@@ -185,16 +187,16 @@ Pengujian pipeline voice assistant dirancang agar 100% dapat dijalankan pada lin
    - Wake Word check: Real-time non-blocking frame process.
    - VAD Max Duration: 15 detik (mencegah rekaman infinite jika ruangan bising).
    - STT Timeout: Maksimal 2.5 detik.
-   - Gemini LLM Request Timeout: Maksimal 3.5 detik.
-   - TTS Synthesis Timeout: Maksimal 4.0 detik per kalimat respons.
+    - Gemini LLM Request Timeout: `LLM_REQUEST_TIMEOUT_MS` default 2.5 detik per percobaan, total budget `LLM_TOTAL_BUDGET_MS` default 4.5 detik.
+    - TTS Synthesis Timeout: Maksimal 4.0 detik per kalimat respons.
 
-2. **Retry Mechanism (`tenacity`)**:
-   - Panggilan API Gemini: `@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3), reraise=True)`.
+2. **Retry Mechanism (deadline-based)**:
+   - Panggilan API Gemini: loop maksimum `LLM_MAX_ATTEMPTS` (default 2) di dalam satu deadline `LLM_TOTAL_BUDGET_MS`; setiap percobaan memakai `min(remaining_budget, LLM_REQUEST_TIMEOUT_MS)`. Error 4xx non-429 langsung dilempar tanpa retry. Tidak lagi memakai `tenacity`.
    - Edge TTS: 1x retry. Jika gagal dalam 2 detik, langsung switch ke Piper TTS.
 
 3. **Fallback Hierarchy**:
    - **TTS**: `Edge TTS (Online)` → `Piper TTS (Offline Local)` → `Terminal Text-Only Log (Fallback Terakhir)`.
-   - **Wake Word**: Porcupine (`.ppn`) → openWakeWord (jika license key Porcupine expired).
+   - **Wake Word**: openWakeWord (default) → Porcupine (`.ppn` + `PICOVOICE_ACCESS_KEY`) bila model openWakeWord tidak tersedia.
 
 4. **Error Logging Codes**:
    - `ERR_AUDIO_INPUT`: Gagal capture stream audio.
@@ -237,8 +239,10 @@ Pengujian pipeline voice assistant dirancang agar 100% dapat dijalankan pada lin
        WHISPER_DEVICE: Literal["cpu", "cuda"] = "cpu"
        WHISPER_COMPUTE_TYPE: str = "int8"
        TTS_PROVIDER_DEFAULT: Literal["edge", "piper"] = "edge"
-       GEMINI_MODEL: str = "gemini-2.0-flash"
-       LLM_REQUEST_TIMEOUT_MS: int = 3500
+       GEMINI_MODEL: str = "gemini-flash-latest"
+       LLM_REQUEST_TIMEOUT_MS: int = 2500
+       LLM_MAX_ATTEMPTS: int = 2
+       LLM_TOTAL_BUDGET_MS: int = 4500
 
        # Observability & Debug
        LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -251,4 +255,5 @@ Pengujian pipeline voice assistant dirancang agar 100% dapat dijalankan pada lin
 
 3. **Privacy Enforcement**:
    - Default setting `DEBUG_RECORD_AUDIO=False`.
-   - Saat `DEBUG_RECORD_AUDIO=True`, audio disimpan di folder temporer `.debug_audio/` dengan rotasi otomatis maksimal 50 file terakhir untuk analisis kegagalan VAD/STT.
+   - Saat `DEBUG_RECORD_AUDIO=True`, audio disimpan di folder `.debug_audio/` (mode `0700`, file WAV `0600`) dengan rotasi otomatis maksimal 50 file terakhir untuk analisis kegagalan VAD/STT.
+   - Transkrip suara tidak ditulis mentah di level INFO: log hanya memuat `text_len` + `text_fp` (SHA-256 8 karakter). Teks penuh hanya muncul saat `LOG_LEVEL=DEBUG`.

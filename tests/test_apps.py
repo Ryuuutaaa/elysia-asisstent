@@ -1,4 +1,3 @@
-import pytest
 from execution.apps import (
     resolve_app, resolve_destructive_action, is_destructive_action,
     list_allowed_apps, normalize_app_name, APP_REGISTRY

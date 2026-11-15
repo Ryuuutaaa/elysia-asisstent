@@ -1,6 +1,5 @@
 import time
-import pytest
-from core.state import StateMachine, AssistantState
+from core.state import AssistantState
 
 def test_full_cycle_idle_to_idle(state_machine):
     fsm = state_machine

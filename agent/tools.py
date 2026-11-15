@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Optional
 from google.genai import types
 from execution.apps import (
@@ -77,7 +78,22 @@ class ToolResponse:
     needs_confirmation: bool = False
     pending_action: Optional[str] = None
     pending_argv: Optional[list[str]] = None
-    kind: Optional[str] = None
+    kind: Optional["ToolKind"] = None
+    raw: str = ""
+    source: str = ""
+
+
+class ToolKind(StrEnum):
+    DESTRUCTIVE = "destructive"
+    APP_SUGGESTION = "app_suggestion"
+    APP_ERROR = "app_error"
+
+
+@dataclass
+class PendingAction:
+    kind: ToolKind
+    action: str
+    argv: list[str]
     raw: str = ""
     source: str = ""
 
@@ -145,7 +161,7 @@ def _handle_open_application(args: dict, source_text: str = "") -> ToolResponse:
             # Transient LLM/network failure — a system error, not "app unknown".
             return ToolResponse(
                 text="Maaf, koneksi ke otak Elysia sedang terganggu. Coba sebut lagi ya.",
-                kind="app_error",
+                kind=ToolKind.APP_ERROR,
             )
         return ToolResponse(text=f"Maaf, Elysia belum mengenali '{app_name}'. Coba sebut ulang.")
 
@@ -160,7 +176,7 @@ def _handle_open_application(args: dict, source_text: str = "") -> ToolResponse:
         needs_confirmation=True,
         pending_action=candidate,
         pending_argv=argv,
-        kind="app_suggestion",
+        kind=ToolKind.APP_SUGGESTION,
         raw=app_name,
         source=source,
     )
@@ -196,7 +212,7 @@ def _handle_system_action(args: dict) -> ToolResponse:
         needs_confirmation=True,
         pending_action=action,
         pending_argv=argv,
-        kind="destructive",
+        kind=ToolKind.DESTRUCTIVE,
     )
 
 def execute_confirmed_action(argv: list[str], action: str) -> ToolResponse:

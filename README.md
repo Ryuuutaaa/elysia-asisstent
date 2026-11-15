@@ -97,7 +97,7 @@ Jalankan pengujian unit, FSM state transition, allowlist security, dan mock resi
 pytest tests/ -v
 ```
 
-Total: 185 test cases (test_apps, test_tools, test_suggest, test_main, test_state, test_vad_stt, test_wake_word, test_resilience, test_debug_audio, test_devices).
+Total: 192 test cases (test_apps, test_tools, test_suggest, test_main, test_state, test_vad_stt, test_wake_word, test_resilience, test_debug_audio, test_devices, test_utils).
 
 ---
 
