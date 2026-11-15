@@ -27,11 +27,6 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg portaudio19-dev
-
       - name: Install CPU-only torch
         run: pip install torch --index-url https://download.pytorch.org/whl/cpu
 
@@ -59,3 +54,11 @@ jobs:
             done
           fi
           exit "$status"
+
+      - name: Upload pytest log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-log
+          path: pytest.log
+          if-no-files-found: ignore

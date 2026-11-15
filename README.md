@@ -93,11 +93,22 @@ Jika STT salah dengar (misal "buka breif" -> "brave browser"), Elysia akan:
 
 ## Pengujian (Test Suite)
 
-Jalankan pengujian unit, FSM state transition, allowlist security, dan mock resilience:
+Perintah cepat (dari root repo, virtualenv aktif):
+
+```bash
+make install-dev   # sekali saja: dependency + ruff
+make lint          # ruff check
+make test          # pytest
+make ci            # lint + test (sama seperti GitHub Actions)
+```
+
+Setara manual:
 
 ```bash
 pytest tests/ -v
 ```
+
+Test berjalan **tanpa audio server / mikrofon** (headless-safe): `sounddevice` diimpor lazy, jadi CI maupun laptop tanpa PulseAudio tidak error saat koleksi test.
 
 Total: 206 test cases (test_apps, test_tools, test_suggest, test_main, test_state, test_vad_stt, test_wake_word, test_resilience, test_debug_audio, test_devices, test_utils, test_llm, test_diagnostics, test_recorder).
 
