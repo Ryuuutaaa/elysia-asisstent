@@ -110,7 +110,7 @@ pytest tests/ -v
 
 Test berjalan **tanpa audio server / mikrofon** (headless-safe): `sounddevice` diimpor lazy, jadi CI maupun laptop tanpa PulseAudio tidak error saat koleksi test.
 
-Total: 228 test cases (test_apps, test_tools, test_suggest, test_main, test_state, test_vad_stt, test_wake_word, test_resilience, test_debug_audio, test_devices, test_utils, test_llm, test_diagnostics, test_recorder). Coverage dijaga di ambang 65% agar tidak turun.
+Total: 234 test cases (test_apps, test_tools, test_suggest, test_main, test_state, test_vad_stt, test_wake_word, test_resilience, test_debug_audio, test_devices, test_utils, test_llm, test_diagnostics, test_recorder). Coverage dijaga di ambang 65% agar tidak turun.
 
 ---
 
@@ -126,3 +126,6 @@ Total: 228 test cases (test_apps, test_tools, test_suggest, test_main, test_stat
 - **Supply-chain**: Model Silero VAD dibundel di wheel `silero-vad`; tidak ada `torch.hub` atau eksekusi kode remote saat startup.
 - **Secret Isolation**: Aplikasi yang diluncurkan tidak mewarisi `GOOGLE_API_KEY` / `PICOVOICE_ACCESS_KEY`.
 - **Log Privasi**: Transkrip suara hanya dicatat sebagai panjang + fingerprint di level INFO; teks penuh hanya saat `LOG_LEVEL=DEBUG`. File `.debug_audio/` dibuat `0700` dan WAV `0600`.
+- **Budget per Perintah**: `TURN_BUDGET_MS` membatasi STT + LLM + tool dalam satu perintah; LLM hanya mendapat sisa budget setelah STT.
+- **Degradasi VAD**: Jika model VAD gagal dimuat, rekaman tetap berhenti di `VAD_FALLBACK_MAX_RECORD_MS` (default 5 s) alih-alih menunggu 15 s.
+- **TTS Dapat Dihentikan**: `request_stop()` menghentikan playback aktif (dipakai saat shutdown).

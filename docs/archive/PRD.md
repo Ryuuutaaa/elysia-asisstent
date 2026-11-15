@@ -186,6 +186,8 @@ Pengujian pipeline voice assistant dirancang agar 100% dapat dijalankan pada lin
 1. **Timeout Policy per Tahapan**:
    - Wake Word check: Real-time non-blocking frame process.
    - VAD Max Duration: 15 detik (mencegah rekaman infinite jika ruangan bising).
+   - VAD Fallback: jika model VAD gagal dimuat, rekaman berhenti di `VAD_FALLBACK_MAX_RECORD_MS` (default 5 detik).
+   - Turn Budget: `TURN_BUDGET_MS` (default 7 detik) membatasi STT + LLM + tool per perintah.
    - STT Timeout: Maksimal 2.5 detik.
     - Gemini LLM Request Timeout: `LLM_REQUEST_TIMEOUT_MS` default 2.5 detik per percobaan, total budget `LLM_TOTAL_BUDGET_MS` default 4.5 detik.
     - TTS Synthesis Timeout: Maksimal 4.0 detik per kalimat respons.
