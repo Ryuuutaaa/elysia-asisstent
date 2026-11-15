@@ -1,7 +1,20 @@
+import sys
+import types
+
 import numpy as np
 from unittest.mock import MagicMock
 
 import audio.diagnostics as diag
+
+
+def _install_fake_sounddevice(monkeypatch, stream_factory=None, play=None):
+    fake = types.SimpleNamespace(
+        InputStream=stream_factory or (lambda **kwargs: None),
+        play=play or (lambda *args, **kwargs: None),
+        query_devices=lambda *args, **kwargs: [],
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake)
+    return fake
 
 
 def test_bar_bounds():
@@ -77,10 +90,9 @@ class _FakeStream:
 
 def test_mic_quality_returns_measurements(monkeypatch):
     audio = np.ones((1600, 1), dtype=np.int16) * 3000
-    monkeypatch.setattr(
-        diag.sd,
-        "InputStream",
-        lambda **kwargs: _FakeStream(kwargs["callback"], audio),
+    _install_fake_sounddevice(
+        monkeypatch,
+        stream_factory=lambda **kwargs: _FakeStream(kwargs["callback"], audio),
     )
     monkeypatch.setattr(diag.time, "sleep", lambda seconds: None)
 
@@ -96,7 +108,7 @@ def test_mic_quality_reports_stream_failure(monkeypatch):
     def boom(**kwargs):
         raise RuntimeError("no device")
 
-    monkeypatch.setattr(diag.sd, "InputStream", boom)
+    _install_fake_sounddevice(monkeypatch, stream_factory=boom)
 
     result = diag.test_mic_quality(None, duration=0.0)
 

@@ -1,7 +1,6 @@
 import asyncio
 import tempfile
 import time
-import sounddevice as sd
 import numpy as np
 from typing import Optional
 from core.config import settings
@@ -110,6 +109,8 @@ def play_audio_bytes(audio_bytes: bytes, text: str = "", is_raw_pcm: bool = Fals
 
     try:
         if is_raw_pcm:
+            import sounddevice as sd
+
             samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             sd.play(samples, samplerate=sample_rate, blocking=True)
         else:

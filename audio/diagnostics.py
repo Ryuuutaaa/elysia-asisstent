@@ -1,7 +1,6 @@
 import subprocess
 import time
 import numpy as np
-import sounddevice as sd
 from typing import Optional
 from core.config import settings
 from core.logger import get_logger
@@ -32,6 +31,8 @@ def diagnose_speakers() -> list[dict]:
             if len(parts) >= 2:
                 sinks.append({"name": parts[1], "default": parts[1] == default, "state": parts[-1] if len(parts) > 4 else ""})
     try:
+        import sounddevice as sd
+
         for i, d in enumerate(sd.query_devices()):
             if d["max_output_channels"] > 0:
                 sinks.append({"sd_index": i, "sd_name": d["name"], "channels": d["max_output_channels"]})
@@ -70,6 +71,8 @@ def test_mic_quality(device_index: Optional[int], duration: float = 2.5) -> dict
         if not done[0]:
             buf.append(indata[:, 0].copy())
     try:
+        import sounddevice as sd
+
         stream = sd.InputStream(samplerate=settings.SAMPLE_RATE, blocksize=512, channels=1, dtype="int16", device=device_index, callback=cb)
         stream.start()
         time.sleep(duration)
@@ -106,6 +109,8 @@ def test_mic_quality(device_index: Optional[int], duration: float = 2.5) -> dict
 
 def try_speaker_beep(duration: float = 0.4, freq: float = 880.0) -> dict:
     try:
+        import sounddevice as sd
+
         sr = 22050
         t = np.linspace(0, duration, int(sr * duration), False)
         tone = (np.sin(2 * np.pi * freq * t) * 0.3).astype(np.float32)
@@ -127,6 +132,8 @@ def run_preflight_diagnostics(device_index: Optional[int], interactive: bool = T
     print(f"  sounddevice index          : {device_index}")
     try:
         if device_index is not None:
+            import sounddevice as sd
+
             info = sd.query_devices(device_index)
             print(f"  Device info                : {info['name']}  ({info['max_input_channels']} in / {info['max_output_channels']} out)")
     except Exception as e:

@@ -3,13 +3,20 @@ import subprocess
 import time
 import threading
 import numpy as np
-import sounddevice as sd
 from pathlib import Path
 from typing import Optional, Callable
 from core.config import settings
 from core.logger import get_logger
 
 log = get_logger("recorder")
+
+
+def _sd():
+    """Import sounddevice lazily: importing it initializes PortAudio, which
+    fails on headless machines with no audio server (e.g. CI runners)."""
+    import sounddevice
+
+    return sounddevice
 
 _ORIGINAL_PULSE_SOURCE: Optional[str] = None
 _PULSE_SOURCE_CAPTURED = False
@@ -88,7 +95,7 @@ def resolve_pulse_source(source_type: str) -> Optional[str]:
 
 
 def _find_virtual_input_index() -> Optional[int]:
-    devices = sd.query_devices()
+    devices = _sd().query_devices()
     for preferred in ["pulse", "pipewire", "default"]:
         for i, dev in enumerate(devices):
             if dev["max_input_channels"] > 0 and preferred in dev["name"].lower():
@@ -130,7 +137,7 @@ def find_device_index(source_type: str) -> Optional[int]:
 
     log.critical("audio_device_not_found", error_code="ERR_AUDIO_INPUT", source_type=source_type)
     try:
-        default = sd.query_devices(kind="input")
+        default = _sd().query_devices(kind="input")
         if default:
             os.environ.pop("PULSE_SOURCE", None)
             log.warning("audio_device_fallback_default", device=default["name"])
@@ -176,7 +183,7 @@ class AudioRecorder:
         self._device_index = device_index
         self._sample_rate = settings.SAMPLE_RATE
         self._buffer: list[np.ndarray] = []
-        self._stream: Optional[sd.InputStream] = None
+        self._stream = None
         self._recording = False
         self._lock = threading.Lock()
         self._on_frame: Optional[Callable[[np.ndarray], None]] = None
@@ -200,7 +207,7 @@ class AudioRecorder:
     def start_stream(self):
         if self._stream is not None:
             return
-        self._stream = sd.InputStream(
+        self._stream = _sd().InputStream(
             samplerate=self._sample_rate,
             blocksize=512,
             channels=1,
