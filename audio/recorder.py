@@ -247,10 +247,17 @@ class AudioRecorder:
         try:
             src = resolve_pulse_source(settings.AUDIO_INPUT_SOURCE) or _run_pactl(["get-default-source"])
             if src:
-                subprocess.run(["pactl", "set-source-mute", src, "1"], timeout=2.0, shell=False, capture_output=True)
+                result = subprocess.run(
+                    ["pactl", "set-source-mute", src, "1"],
+                    timeout=2.0,
+                    shell=False,
+                    capture_output=True,
+                )
+                if result.returncode != 0:
+                    log.warning("mic_mute_pactl_nonzero", returncode=result.returncode)
                 ok = True
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("mic_mute_pactl_failed", error=str(e))
         if ok:
             log.info("mic_muted")
 
@@ -263,7 +270,14 @@ class AudioRecorder:
         try:
             src = resolve_pulse_source(settings.AUDIO_INPUT_SOURCE) or _run_pactl(["get-default-source"])
             if src:
-                subprocess.run(["pactl", "set-source-mute", src, "0"], timeout=2.0, shell=False, capture_output=True)
-        except Exception:
-            pass
+                result = subprocess.run(
+                    ["pactl", "set-source-mute", src, "0"],
+                    timeout=2.0,
+                    shell=False,
+                    capture_output=True,
+                )
+                if result.returncode != 0:
+                    log.warning("mic_unmute_pactl_nonzero", returncode=result.returncode)
+        except Exception as e:
+            log.warning("mic_unmute_pactl_failed", error=str(e))
         log.info("mic_unmuted")

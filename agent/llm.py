@@ -15,6 +15,7 @@ _client: Optional[genai.Client] = None
 
 
 _resolved_model: Optional[str] = None
+_resolved_for: Optional[str] = None
 
 
 def scan_available_models(api_key: Optional[str] = None) -> list[str]:
@@ -29,11 +30,11 @@ def scan_available_models(api_key: Optional[str] = None) -> list[str]:
 
 
 def resolve_model(preferred: Optional[str] = None) -> str:
-    global _resolved_model
-    if _resolved_model:
+    global _resolved_model, _resolved_for
+    want = preferred or settings.GEMINI_MODEL
+    if _resolved_model and _resolved_for == want:
         return _resolved_model
 
-    want = preferred or settings.GEMINI_MODEL
     candidates = [want]
     for fallback in ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"]:
         if fallback not in candidates:
@@ -45,6 +46,7 @@ def resolve_model(preferred: Optional[str] = None) -> str:
         try:
             probe_client.models.generate_content(model=m, contents="ping")
             _resolved_model = m
+            _resolved_for = want
             if m != want:
                 log.warning("model_fallback", requested=want, resolved=m)
             else:
@@ -55,6 +57,7 @@ def resolve_model(preferred: Optional[str] = None) -> str:
             continue
 
     _resolved_model = want
+    _resolved_for = want
     log.warning("model_resolve_failed", requested=want, error=str(last_err)[:200] if last_err else "")
     return want
 

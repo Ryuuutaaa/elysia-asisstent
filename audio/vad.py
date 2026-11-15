@@ -7,10 +7,6 @@ from core.logger import get_logger
 
 log = get_logger("vad")
 
-# Never track `master`: torch.hub executes the repo's hubconf.py on load, so the
-# ref must be immutable. The version is also exposed via SILERO_VAD_HUB_REF.
-SILERO_VAD_DEFAULT_REF = "v5.1.2"
-
 class SileroVAD:
     def __init__(self, threshold: Optional[float] = None):
         self._model = None
@@ -36,21 +32,14 @@ class SileroVAD:
                 f"Silero VAD hanya mendukung 8000/16000 Hz, bukan {self._sample_rate}"
             )
         log.info("silero_vad_loading")
-        # torch.hub downloads and executes the repo's hubconf.py on first run.
-        # A pinned release tag keeps that code immutable; empty falls back to
-        # the pinned constant above, never to `master`.
-        ref = settings.SILERO_VAD_HUB_REF.strip() or SILERO_VAD_DEFAULT_REF
-        repo = f"snakers4/silero-vad:{ref}"
+        # The silero-vad wheel bundles silero_vad.jit: loading it never downloads
+        # or executes remote code (no hubconf, no network fetch).
         try:
-            self._model, utils = torch.hub.load(
-                repo_or_dir=repo,
-                model="silero_vad",
-                force_reload=False,
-                trust_repo=True,
-                verbose=False,
-            )
+            from silero_vad import load_silero_vad
+
+            self._model = load_silero_vad()
             self._model.eval()
-            log.info("silero_vad_loaded", repo=repo)
+            log.info("silero_vad_loaded", source="package", sample_rate=self._sample_rate)
         except Exception as e:
             log.error("silero_vad_load_failed", error=str(e))
             raise e

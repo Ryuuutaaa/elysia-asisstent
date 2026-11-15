@@ -212,44 +212,36 @@ def test_vad_load_rejects_unsupported_sample_rate(monkeypatch):
         SileroVAD().load()
 
 
-def test_silero_load_pins_release_ref(monkeypatch):
+def test_silero_load_uses_bundled_package_model(monkeypatch):
     import audio.vad as vad_mod
+    import silero_vad
 
-    captured = {}
+    loaded = []
 
     class FakeModel:
         def eval(self):
-            return None
+            loaded.append("eval")
 
-    def fake_hub(**kwargs):
-        captured.update(kwargs)
-        return FakeModel(), {}
+    def fake_load():
+        loaded.append("load")
+        return FakeModel()
 
-    monkeypatch.setattr(vad_mod.torch.hub, "load", fake_hub)
-    monkeypatch.setattr(vad_mod.settings, "SILERO_VAD_HUB_REF", "")
+    def forbidden_hub(**kwargs):
+        raise AssertionError("torch.hub must not be used")
 
-    vad_mod.SileroVAD().load()
+    monkeypatch.setattr(silero_vad, "load_silero_vad", fake_load)
+    monkeypatch.setattr(vad_mod.torch.hub, "load", forbidden_hub)
 
-    assert captured["repo_or_dir"] == f"snakers4/silero-vad:{vad_mod.SILERO_VAD_DEFAULT_REF}"
-    assert "master" not in captured["repo_or_dir"]
+    vad = vad_mod.SileroVAD()
+    vad.load()
+
+    assert loaded == ["load", "eval"]
+    assert vad._model is not None
 
 
-def test_silero_load_honors_custom_ref(monkeypatch):
+def test_vad_source_never_uses_torch_hub():
+    import pathlib
     import audio.vad as vad_mod
 
-    captured = {}
-
-    class FakeModel:
-        def eval(self):
-            return None
-
-    def fake_hub(**kwargs):
-        captured.update(kwargs)
-        return FakeModel(), {}
-
-    monkeypatch.setattr(vad_mod.torch.hub, "load", fake_hub)
-    monkeypatch.setattr(vad_mod.settings, "SILERO_VAD_HUB_REF", "v5.0.0")
-
-    vad_mod.SileroVAD().load()
-
-    assert captured["repo_or_dir"] == "snakers4/silero-vad:v5.0.0"
+    source = pathlib.Path(vad_mod.__file__).read_text()
+    assert "torch.hub" not in source

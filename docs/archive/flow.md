@@ -58,10 +58,10 @@ main.py
   │     └─ Singleton — tidak di-recreate per cycle
   │
   ├─ 6. Load Silero VAD Model
-  │     audio/vad.py → torch.hub
-  │     ├─ torch.hub.load("snakers4/silero-vad:v5.1.2", "silero_vad")
-  │     ├─ Ref selalu tag rilis (SILERO_VAD_HUB_REF, default v5.1.2); tidak pernah master
-  │     └─ Cache: model di-download sekali, cache di ~/.cache/torch/hub/
+  │     audio/vad.py → paket silero-vad
+  │     ├─ from silero_vad import load_silero_vad
+  │     ├─ Model silero_vad.jit ikut di wheel; tanpa download / kode remote
+  │     └─ Chunk: 512 sampel @16kHz, 256 sampel @8kHz
   │
   ├─ 7. Init TTS Providers
   │     audio/tts.py
@@ -571,7 +571,7 @@ Catatan: Semua resource di-cleanup via try/finally atau atexit handler
 │                                                             │
 │   └─ audio/wake_word.py ──── pvporcupine                     │
 │   └─ audio/recorder.py ──── sounddevice, numpy               │
-│   └─ audio/vad.py ────────── torch (Silero VAD via torch.hub)│
+│   └─ audio/vad.py ────────── torch + silero-vad (model bundled)  │
 │   └─ audio/stt.py ────────── faster-whisper                  │
 │   └─ audio/tts.py ────────── edge-tts, piper-tts             │
 │                                                             │

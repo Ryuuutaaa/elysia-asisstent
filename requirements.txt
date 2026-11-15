@@ -18,11 +18,8 @@ openwakeword>=0.4,<0.5
 # --- VAD / Endpointing ---
 # Silero VAD membutuhkan torch (CPU-only cukup)
 torch>=2.0,<3.0
-# Tidak diimpor langsung, tapi dideklarasikan sebagai dependency oleh hubconf
-# snakers4/silero-vad ("dependencies = ['torch', 'torchaudio']") yang dipakai torch.hub.
-torchaudio>=2.0,<3.0
-# Model Silero VAD di-download via torch.hub dengan ref tag rilis yang di-pin
-# di audio/vad.py (bukan `master`).
+# Model silero_vad.jit ikut di dalam wheel; tidak ada torch.hub / download saat startup.
+silero-vad>=6.2,<7.0
 
 # --- Speech-to-Text (STT) ---
 faster-whisper>=1.1,<2.0

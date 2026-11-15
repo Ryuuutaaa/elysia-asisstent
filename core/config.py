@@ -13,7 +13,6 @@ class Settings(BaseSettings):
     SAMPLE_RATE: int = Field(default=16000, ge=8000, le=48000)
     VAD_SILENCE_THRESHOLD_MS: int = Field(default=800, ge=300, le=3000)
     VAD_THRESHOLD: float = Field(default=0.5, ge=0.1, le=0.9)
-    SILERO_VAD_HUB_REF: str = Field(default="v5.1.2", description="Pin ref torch.hub Silero VAD; kosong = tag default yang di-pin di audio/vad.py, tidak pernah master")
     VAD_MAX_RECORD_MS: int = Field(default=15000, ge=5000, le=60000)
     VAD_NO_SPEECH_GRACE_MS: int = Field(default=5000, ge=1000, le=15000)
     VAD_START_IGNORE_MS: int = Field(default=500, ge=0, le=2000)
