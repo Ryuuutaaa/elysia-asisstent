@@ -3,6 +3,8 @@
 .debug_audio
 .omo
 .pytest_cache
+.coverage
+pytest.log
 .env
 !.env.example
 .venv/
