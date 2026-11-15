@@ -29,3 +29,10 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]
+
+[tool.coverage.run]
+source = ["agent", "audio", "core", "execution", "main.py"]
+
+[tool.coverage.report]
+fail_under = 65
+show_missing = true

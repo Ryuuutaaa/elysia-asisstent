@@ -68,6 +68,7 @@ def _destructive_pending():
         kind=ToolKind.DESTRUCTIVE,
         action="shutdown",
         argv=["systemctl", "poweroff"],
+        nonce="merah",
     )
 
 
@@ -82,10 +83,54 @@ def test_confirmation_affirm_executes(monkeypatch):
         lambda argv, action: executed.append((argv, action)) or ToolResponse(text="ok"),
     )
 
-    assistant._handle_confirmation_response("ya")
+    assistant._handle_confirmation_response("ya, merah")
 
     assert executed == [(["systemctl", "poweroff"], "shutdown")]
     assert assistant._pending is None
+
+
+def test_confirmation_requires_nonce(monkeypatch):
+    assistant = ElysiaAssistant()
+    spoken = []
+    executed = []
+    monkeypatch.setattr(assistant, "_speak_and_idle", lambda text, *a, **k: spoken.append(text))
+    monkeypatch.setattr("main.execute_confirmed_action", lambda *args: executed.append(args))
+    assistant._pending = _destructive_pending()
+
+    assistant._handle_confirmation_response("ya")
+
+    assert executed == []
+    assert "tidak cocok" in spoken[-1].lower()
+
+
+def test_confirmation_wrong_nonce_cancels(monkeypatch):
+    assistant = ElysiaAssistant()
+    spoken = []
+    executed = []
+    monkeypatch.setattr(assistant, "_speak_and_idle", lambda text, *a, **k: spoken.append(text))
+    monkeypatch.setattr("main.execute_confirmed_action", lambda *args: executed.append(args))
+    assistant._pending = _destructive_pending()
+
+    assistant._handle_confirmation_response("ya, biru")
+
+    assert executed == []
+    assert "tidak cocok" in spoken[-1].lower()
+
+
+def test_confirmation_nonce_tolerates_case_and_punctuation(monkeypatch):
+    assistant = ElysiaAssistant()
+    spoken = []
+    executed = []
+    monkeypatch.setattr(assistant, "_speak_and_idle", lambda text, *a, **k: spoken.append(text))
+    monkeypatch.setattr(
+        "main.execute_confirmed_action",
+        lambda argv, action: executed.append((argv, action)) or ToolResponse(text="ok"),
+    )
+    assistant._pending = _destructive_pending()
+
+    assistant._handle_confirmation_response("Ya, MERAH!")
+
+    assert executed == [(["systemctl", "poweroff"], "shutdown")]
 
 
 def test_confirmation_negative_cancels(monkeypatch):
@@ -343,11 +388,11 @@ def test_app_suggestion_retry_cap_then_idle(monkeypatch):
 
 def test_run_command_app_error_relistens_without_retry_budget(monkeypatch):
     assistant = ElysiaAssistant()
-    monkeypatch.setattr("main.chat", lambda text, prompt: object())
+    monkeypatch.setattr("main.chat", lambda text, prompt, deadline=None: object())
     monkeypatch.setattr("main.extract_function_call", lambda resp: object())
     monkeypatch.setattr(
         "main.handle_function_call",
-        lambda fc, source_text="": ToolResponse(text="Maaf, koneksi terganggu.", kind="app_error"),
+        lambda fc, source_text="", deadline=None: ToolResponse(text="Maaf, koneksi terganggu.", kind="app_error"),
     )
     prompts = []
     monkeypatch.setattr(
@@ -481,6 +526,29 @@ def test_speak_and_idle_clears_followup_mode(monkeypatch):
 
     assert assistant._await_mode is None
     assert assistant._fsm.current_state == AssistantState.IDLE
+
+
+def test_run_command_shares_one_deadline_across_calls(monkeypatch):
+    assistant = ElysiaAssistant()
+    captured = {}
+
+    def fake_chat(text, prompt, deadline=None):
+        captured["chat"] = deadline
+        return object()
+
+    def fake_handle(fc, source_text="", deadline=None):
+        captured["tool"] = deadline
+        return ToolResponse(text="ok")
+
+    monkeypatch.setattr("main.chat", fake_chat)
+    monkeypatch.setattr("main.extract_function_call", lambda response: object())
+    monkeypatch.setattr("main.handle_function_call", fake_handle)
+    monkeypatch.setattr(assistant, "_speak_and_ask_followup", lambda *a, **k: None)
+
+    assistant._run_command("buka spotify")
+
+    assert captured["chat"] is not None
+    assert captured["chat"] == captured["tool"]
 
 
 def test_run_command_logs_fingerprint_not_raw_transcript(monkeypatch):

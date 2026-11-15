@@ -10,6 +10,7 @@ lint:
 	ruff check .
 
 test:
-	pytest -o addopts="" -q
+	pytest --cov=agent --cov=audio --cov=core --cov=execution --cov=main \
+		--cov-report=term-missing -o addopts="" -q
 
 ci: lint test

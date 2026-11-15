@@ -2,11 +2,14 @@ import pytest
 from unittest.mock import patch, MagicMock
 from google.genai import types
 from agent.tools import (
+    CONFIRMATION_WORDS,
+    build_confirmation_nonce,
     classify_followup,
     handle_function_call,
     cancel_action,
     execute_confirmed_action,
     is_affirmation,
+    nonce_present,
 )
 
 @patch("agent.tools.safe_execute", return_value=MagicMock(success=True, message="opened"))
@@ -17,7 +20,7 @@ def test_open_valid_app(mock_exec):
     assert res.needs_confirmation is False
 
 def test_open_app_not_in_allowlist(monkeypatch):
-    monkeypatch.setattr("agent.tools.choose_app", lambda raw, source_text="": ("none", None))
+    monkeypatch.setattr("agent.tools.choose_app", lambda raw, source_text="", deadline=None: ("none", None))
     fc = types.FunctionCall(name="open_application", args={"app_name": "hacker xyz"})
     res = handle_function_call(fc)
     assert "belum mengenali" in res.text
@@ -70,7 +73,21 @@ def test_system_action_requires_confirmation():
     res = handle_function_call(fc)
     assert res.needs_confirmation is True
     assert res.pending_argv is not None
+    assert res.nonce in CONFIRMATION_WORDS
+    assert res.nonce in res.text
     assert "konfirmasi" in res.text.lower() or "yakin" in res.text.lower()
+
+
+def test_confirmation_nonce_is_from_known_words():
+    assert build_confirmation_nonce() in CONFIRMATION_WORDS
+
+
+def test_nonce_present_matches_whole_word():
+    assert nonce_present("ya, merah!", "merah") is True
+    assert nonce_present("Ya MERAH", "merah") is True
+    assert nonce_present("ya, biru", "merah") is False
+    assert nonce_present("ya", "") is False
+    assert nonce_present("merahkan", "merah") is False
 
 def test_system_action_unknown():
     fc = types.FunctionCall(name="system_action", args={"action": "destroy planet"})
@@ -156,7 +173,7 @@ def test_transient_llm_error_is_retried_not_cached(monkeypatch):
     monkeypatch.setattr("agent.tools.suggest_app", lambda raw: None)
     calls = {"n": 0}
 
-    def flaky(raw, source_text=""):
+    def flaky(raw, source_text="", deadline=None):
         calls["n"] += 1
         return ("error", None) if calls["n"] == 1 else ("found", "brave browser")
 
@@ -175,7 +192,7 @@ def test_definitive_none_is_cached(monkeypatch):
     monkeypatch.setattr("agent.tools.suggest_app", lambda raw: None)
     calls = {"n": 0}
 
-    def once(raw, source_text=""):
+    def once(raw, source_text="", deadline=None):
         calls["n"] += 1
         return ("none", None)
 
@@ -186,3 +203,19 @@ def test_definitive_none_is_cached(monkeypatch):
     handle_function_call(fc, source_text="buka hacker xyz")
 
     assert calls["n"] == 1
+
+
+def test_handle_function_call_forwards_deadline(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("agent.tools.suggest_app", lambda raw: None)
+
+    def fake_choose(raw, source_text="", deadline=None):
+        captured["deadline"] = deadline
+        return ("none", None)
+
+    monkeypatch.setattr("agent.tools.choose_app", fake_choose)
+    fc = types.FunctionCall(name="open_application", args={"app_name": "breif"})
+
+    handle_function_call(fc, source_text="buka breif", deadline=123.0)
+
+    assert captured["deadline"] == 123.0

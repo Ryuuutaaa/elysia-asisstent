@@ -6,7 +6,7 @@ from typing import Optional
 
 import numpy as np
 
-from agent.llm import chat, extract_function_call, extract_text
+from agent.llm import chat, extract_function_call, extract_text, turn_deadline
 from agent.prompt import build_system_prompt
 from agent.tools import (
     PendingAction,
@@ -17,6 +17,7 @@ from agent.tools import (
     execute_confirmed_action,
     handle_function_call,
     is_affirmation,
+    nonce_present,
 )
 from audio.recorder import AudioRecorder, find_device_index, save_debug_audio
 from audio.stt import get_stt
@@ -259,9 +260,10 @@ class ElysiaAssistant:
             session_id=self._session_id,
         )
         log.debug("processing_user_text_raw", text=text, session_id=self._session_id)
+        deadline = turn_deadline()
         t_llm = time.perf_counter()
         try:
-            response = chat(text, self._system_prompt)
+            response = chat(text, self._system_prompt, deadline=deadline)
         except Exception as e:
             log.error("llm_call_failed", error=str(e), error_code="ERR_LLM_TIMEOUT")
             self._respond_error("Maaf, koneksi ke otak Elysia sedang terganggu.")
@@ -274,7 +276,9 @@ class ElysiaAssistant:
         fn_call = extract_function_call(response)
         if fn_call:
             t_tool = time.perf_counter()
-            tool_res: ToolResponse = handle_function_call(fn_call, source_text=text)
+            tool_res: ToolResponse = handle_function_call(
+                fn_call, source_text=text, deadline=deadline
+            )
             log.info(
                 "stage_tool",
                 tool_ms=round((time.perf_counter() - t_tool) * 1000, 1),
@@ -290,6 +294,7 @@ class ElysiaAssistant:
                         argv=tool_res.pending_argv or [],
                         raw=tool_res.raw,
                         source=tool_res.source,
+                        nonce=tool_res.nonce,
                     )
                 self._speak_and_listen(tool_res.text, start_e2e)
             elif tool_res.kind == ToolKind.APP_ERROR:
@@ -321,8 +326,13 @@ class ElysiaAssistant:
             self._speak_and_idle("Tidak ada konfirmasi. Perintah dibatalkan.")
             return
 
-        if is_affirmation(text):
+        if is_affirmation(text) and nonce_present(text, pending.nonce):
             tool_res = execute_confirmed_action(pending.argv, pending.action)
+        elif is_affirmation(text):
+            log.warning("destructive_nonce_mismatch", action=pending.action)
+            tool_res = ToolResponse(
+                text="Kata konfirmasi tidak cocok. Perintah dibatalkan."
+            )
         else:
             tool_res = cancel_action(pending.action)
 

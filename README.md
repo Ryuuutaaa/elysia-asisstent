@@ -86,8 +86,8 @@ Jika STT salah dengar (misal "buka breif" -> "brave browser"), Elysia akan:
 - "Buka file manager"
 - "Buka terminal"
 - "Buka spotify"
-- "Matikan komputer" (membutuhkan konfirmasi verbal "ya")
-- "Kunci layar" (membutuhkan konfirmasi verbal "ya")
+- "Matikan komputer" (membutuhkan konfirmasi verbal "ya, <kata>" — mis. "ya, merah")
+- "Kunci layar" (membutuhkan konfirmasi verbal "ya, <kata>" — mis. "ya, biru")
 
 ---
 
@@ -96,9 +96,9 @@ Jika STT salah dengar (misal "buka breif" -> "brave browser"), Elysia akan:
 Perintah cepat (dari root repo, virtualenv aktif):
 
 ```bash
-make install-dev   # sekali saja: dependency + ruff
+make install-dev   # sekali saja: dependency + ruff + pytest-cov
 make lint          # ruff check
-make test          # pytest
+make test          # pytest + coverage (gagal jika < 65%)
 make ci            # lint + test (sama seperti GitHub Actions)
 ```
 
@@ -110,7 +110,7 @@ pytest tests/ -v
 
 Test berjalan **tanpa audio server / mikrofon** (headless-safe): `sounddevice` diimpor lazy, jadi CI maupun laptop tanpa PulseAudio tidak error saat koleksi test.
 
-Total: 206 test cases (test_apps, test_tools, test_suggest, test_main, test_state, test_vad_stt, test_wake_word, test_resilience, test_debug_audio, test_devices, test_utils, test_llm, test_diagnostics, test_recorder).
+Total: 219 test cases (test_apps, test_tools, test_suggest, test_main, test_state, test_vad_stt, test_wake_word, test_resilience, test_debug_audio, test_devices, test_utils, test_llm, test_diagnostics, test_recorder). Coverage dijaga di ambang 65% agar tidak turun.
 
 ---
 
@@ -119,7 +119,7 @@ Total: 206 test cases (test_apps, test_tools, test_suggest, test_main, test_stat
 - **Zero Free-form Shell Execution**: Output LLM dilarang keras menjalankan string shell bebas (shell=True).
 - **Strict Allowlist**: LLM hanya memilih dari nama aplikasi yang terdaftar di execution/apps.py.
 - **Allowlist Struktural**: `execution/linux.py` menolak `argv` apa pun yang tidak ada di registry, tepat sebelum `Popen` — bukan hanya di layer tool.
-- **Konfirmasi Dua Langkah**: Perintah destruktif (shutdown, reboot, lock screen) memerlukan jawaban "ya" secara verbal sebelum dieksekusi.
+- **Konfirmasi Dua Langkah + Nonce**: Perintah destruktif (shutdown, reboot, lock screen) memerlukan jawaban "ya, <kata nonce>" yang diucapkan Elysia (mis. "ya, merah"). "ya" saja tidak cukup, sehingga audio latar/TV tidak bisa mengonfirmasi.
 - **Mic Anti-Echo**: Mikrofon di-mute dan wake word di-reset secara otomatis selama playback TTS agar suara Elysia tidak memicu loop perintah sendiri.
 - **Token-Guard**: Exact match hanya diakui jika token benar-benar ada di STT asli (mencegah LLM "mengoreksi" sendiri tanpa konfirmasi).
 - **Prompt Injection Guard**: System prompt memblok instruksi tersembunyi dari user input.

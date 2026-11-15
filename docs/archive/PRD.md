@@ -41,7 +41,7 @@ Membangun asisten pribadi _speech-to-speech_ bernama **Elysia** yang berjalan di
 
 - **Input Untrusted**: Output LLM dianggap untrusted input.
 - **Pattern Perintah**: Format terstruktur `"buka <nama_app>"`, ditolak jika di luar allowlist.
-- **Trigger Konfirmasi Verbal**: Aksi berisiko/destruktif (`shutdown`, `reboot`, `lock screen`) wajib konfirmasi verbal dua langkah ("Yakin ingin mematikan sistem?").
+- **Trigger Konfirmasi Verbal**: Aksi berisiko/destruktif (`shutdown`, `reboot`, `lock screen`) wajib konfirmasi verbal dua langkah plus kata nonce acak ("Yakin ingin mematikan sistem? Jawab 'ya, merah'").
 - **Strict Allowlist**: Registry mapping nama ramah → executable konkret. Tidak ada eksekusi free-form bash string.
 - **Allowlist Struktural**: `execution/linux.py` memvalidasi ulang `argv` terhadap registry tepat sebelum `Popen`, sehingga pemanggil baru tidak bisa melewati boundary.
 - **Isolasi Secret**: Proses anak tidak mewarisi `GOOGLE_API_KEY` / `PICOVOICE_ACCESS_KEY`.
@@ -68,7 +68,7 @@ State machine utama: `IDLE → LISTENING → PROCESSING → SPEAKING → IDLE`
 | STT Transkripsi | faster-whisper `small` int8 | Latency STT ≤ 1.0 detik untuk rekaman ≤ 5 detik; Word Error Rate (WER) < 10% untuk pola perintah Indonesia standar |
 | Latency Budget E2E | Total waktu dari user selesai bicara hingga Elysia mulai bersuara | **E2E Latency ≤ 2.5–3.0 detik (p95)** diukur via metric `structlog` (`latency_ms`). Breakdown budget: VAD stop (≤300ms) + STT (≤1000ms) + Gemini (≤1200ms) + TTS buffer first-byte (≤500ms) |
 | Intent & Tool Execution | Gemini function calling → allowlist → `subprocess(shell=False)` | Perintah valid dieksekusi < 300ms pasca LLM response; perintah di luar allowlist ditolak dengan verbal; zero audit findings untuk `shell=True` |
-| Konfirmasi Aksi Berisiko | Guard dua langkah untuk perintah destruktif (`shutdown`, `reboot`, `lock screen`) | 0 eksekusi perintah destruktif tanpa konfirmasi verbal positif ("ya" / "lanjutkan"); membatalkan aksi jika jawaban negatif atau timeout 5 detik |
+| Konfirmasi Aksi Berisiko | Guard dua langkah + nonce untuk perintah destruktif (`shutdown`, `reboot`, `lock screen`) | 0 eksekusi perintah destruktif tanpa konfirmasi verbal positif yang menyebut kata nonce ("ya, merah" / "iya biru"); "ya" saja ditolak; membatalkan aksi jika jawaban negatif, nonce salah, atau timeout 5 detik |
 | Multi-source Audio | Switch `mic`, `speaker` (PipeWire loopback), `headset` | Startup otomatis meng-enumerate `pactl list short sources`; switch source via `.env` tanpa reload source code |
 | Anti-echo Loop | Mic mute + Porcupine paused selama playback TTS | 0 self-trigger loop dalam 100 siklus respons berulang pada volume speaker 75% |
 | Network Outage: Gemini | Kegagalan jaringan / 5xx / timeout pada Google AI Studio | Retry maksimum `LLM_MAX_ATTEMPTS=2` dalam total budget `LLM_TOTAL_BUDGET_MS=4500`, timeout per request `LLM_REQUEST_TIMEOUT_MS=2500`; 4xx (kecuali 429) tidak di-retry; fallback verbal: "Maaf, koneksi ke otak Elysia sedang terganggu" tanpa crash daemon |

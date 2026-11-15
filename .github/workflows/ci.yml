@@ -36,13 +36,13 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Lint
-        run: ruff check .
+        run: make lint
 
       - name: Test
         shell: bash
         run: |
           set +e
-          pytest -o addopts="" -q > pytest.log 2>&1
+          make test > pytest.log 2>&1
           status=$?
           if [ "$status" -ne 0 ]; then
             echo "pytest exited with status $status"

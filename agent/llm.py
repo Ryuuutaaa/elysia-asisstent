@@ -20,10 +20,14 @@ _resolved_for: Optional[str] = None
 
 def scan_available_models(api_key: Optional[str] = None) -> list[str]:
     key = api_key or settings.GOOGLE_API_KEY
-    tmp = genai.Client(api_key=key)
     try:
-        raw = [m.name for m in tmp.models.list()]
-        return [n.removeprefix("models/") for n in raw]
+        client = get_client() if key == settings.GOOGLE_API_KEY else genai.Client(api_key=key)
+        models = run_with_timeout(
+            lambda: [m.name for m in client.models.list()],
+            settings.MODEL_SCAN_TIMEOUT_SEC,
+            budget="llm",
+        )
+        return [name.removeprefix("models/") for name in models]
     except Exception as e:
         log.warning("model_scan_failed", error=str(e))
         return []
@@ -40,11 +44,15 @@ def resolve_model(preferred: Optional[str] = None) -> str:
         if fallback not in candidates:
             candidates.append(fallback)
 
-    probe_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+    client = get_client()
     last_err = None
     for m in candidates:
         try:
-            probe_client.models.generate_content(model=m, contents="ping")
+            run_with_timeout(
+                lambda model=m: client.models.generate_content(model=model, contents="ping"),
+                settings.MODEL_PROBE_TIMEOUT_SEC,
+                budget="llm",
+            )
             _resolved_model = m
             _resolved_for = want
             if m != want:
@@ -66,8 +74,7 @@ def get_client() -> genai.Client:
     global _client
     if _client is None:
         _client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-        model = resolve_model()
-        log.info("gemini_client_initialized", model=model)
+        log.info("gemini_client_initialized")
     return _client
 
 
@@ -145,8 +152,18 @@ def _is_retryable(exc: BaseException) -> bool:
 _MIN_ATTEMPT_SEC = 0.3
 
 
-def chat(user_text: str, system_prompt: str) -> types.GenerateContentResponse:
-    deadline = time.monotonic() + settings.LLM_TOTAL_BUDGET_MS / 1000
+def turn_deadline() -> float:
+    """One wall-clock budget shared by every LLM call in a single turn."""
+    return time.monotonic() + settings.LLM_TOTAL_BUDGET_MS / 1000
+
+
+def chat(
+    user_text: str,
+    system_prompt: str,
+    deadline: Optional[float] = None,
+) -> types.GenerateContentResponse:
+    if deadline is None:
+        deadline = turn_deadline()
     last: Optional[BaseException] = None
     for attempt in range(settings.LLM_MAX_ATTEMPTS):
         remaining = deadline - time.monotonic()
@@ -201,7 +218,11 @@ def extract_text(response: types.GenerateContentResponse) -> str:
 _CHOOSE_APP_ATTEMPTS = 2
 
 
-def choose_app(raw_name: str, source_text: str = "") -> tuple[str, Optional[str]]:
+def choose_app(
+    raw_name: str,
+    source_text: str = "",
+    deadline: Optional[float] = None,
+) -> tuple[str, Optional[str]]:
     """Ask the LLM to pick the most likely allowlist entry for a misheard name.
 
     Fallback for when deterministic fuzzy matching is unsure. Returns
@@ -219,7 +240,8 @@ def choose_app(raw_name: str, source_text: str = "") -> tuple[str, Optional[str]
         return "none", None
     names = list_allowed_apps()
     heard = (source_text or "").strip() or raw
-    deadline = time.monotonic() + settings.LLM_TOTAL_BUDGET_MS / 1000
+    if deadline is None:
+        deadline = turn_deadline()
     prompt = (
         f"User mengucapkan: {heard!r}.\n"
         f"Kata aplikasi yang tertangkap: {raw!r} (mungkin salah dengar atau typo).\n"

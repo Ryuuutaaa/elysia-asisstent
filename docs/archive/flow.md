@@ -448,7 +448,7 @@ PROCESSING state: Gemini mengembalikan tool call yang berisiko
           │   "shutdown" → ★ DESTRUCTIVE
           │
           ├─ Transisi ke SPEAKING:
-          │   Elysia: "Kamu yakin ingin mematikan sistem? Jawab 'ya' untuk konfirmasi."
+          │   Elysia: "Kamu yakin ingin mematikan sistem? Jawab 'ya, merah' untuk konfirmasi."
           │
           ├─ Transisi ke LISTENING (menunggu konfirmasi):
           │   ├─ Timeout konfirmasi: 5 detik

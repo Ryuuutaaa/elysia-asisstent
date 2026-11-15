@@ -1,4 +1,5 @@
 import re
+import secrets
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Optional
@@ -34,6 +35,21 @@ DENY_WORDS = {
     "gausah", "udah", "sudah", "cukup", "selesai", "beres", "no", "stop",
     "cancel", "batal", "bukan",
 }
+
+# Spoken nonce for destructive actions: short, distinct Indonesian words that
+# survive STT well. A bare "ya" is no longer enough to power off the machine.
+CONFIRMATION_WORDS = ("merah", "biru", "hijau", "kuning")
+
+
+def build_confirmation_nonce() -> str:
+    return secrets.choice(CONFIRMATION_WORDS)
+
+
+def nonce_present(text: str, nonce: str) -> bool:
+    if not nonce:
+        return False
+    words = set(re.findall(r"\w+", text.lower()))
+    return nonce.lower() in words
 
 
 def is_affirmation(text: str) -> bool:
@@ -81,6 +97,7 @@ class ToolResponse:
     kind: Optional["ToolKind"] = None
     raw: str = ""
     source: str = ""
+    nonce: str = ""
 
 
 class ToolKind(StrEnum):
@@ -96,13 +113,18 @@ class PendingAction:
     argv: list[str]
     raw: str = ""
     source: str = ""
+    nonce: str = ""
 
-def handle_function_call(fn_call: types.FunctionCall, source_text: str = "") -> ToolResponse:
+def handle_function_call(
+    fn_call: types.FunctionCall,
+    source_text: str = "",
+    deadline: Optional[float] = None,
+) -> ToolResponse:
     name = fn_call.name
     args = dict(fn_call.args) if fn_call.args else {}
 
     if name == "open_application":
-        return _handle_open_application(args, source_text)
+        return _handle_open_application(args, source_text, deadline)
     elif name == "system_action":
         return _handle_system_action(args)
     else:
@@ -122,7 +144,11 @@ def _app_name_present(app_name: str, source_text: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(norm_key)}(?!\w)", text) is not None
 
 
-def _handle_open_application(args: dict, source_text: str = "") -> ToolResponse:
+def _handle_open_application(
+    args: dict,
+    source_text: str = "",
+    deadline: Optional[float] = None,
+) -> ToolResponse:
     app_name = args.get("app_name", "")
     if not isinstance(app_name, str) or not app_name.strip():
         return ToolResponse(text="Maaf, nama aplikasi tidak diberikan.")
@@ -145,7 +171,7 @@ def _handle_open_application(args: dict, source_text: str = "") -> ToolResponse:
         if candidate is not None:
             set_cached_suggestion(app_name, candidate)  # fuzzy hit is definitive
         else:
-            status, candidate = choose_app(app_name, source_text)
+            status, candidate = choose_app(app_name, source_text, deadline=deadline)
             if status == "found":
                 source = "llm"
                 set_cached_suggestion(app_name, candidate)
@@ -205,14 +231,16 @@ def _handle_system_action(args: dict) -> ToolResponse:
         "kunci layar": "mengunci layar",
     }
     label = action_labels.get(action.strip().lower(), action)
+    nonce = build_confirmation_nonce()
 
-    log.info("destructive_confirmation_required", action=action)
+    log.info("destructive_confirmation_required", action=action, nonce=nonce)
     return ToolResponse(
-        text=f"Kamu yakin ingin {label}? Jawab 'ya' untuk konfirmasi.",
+        text=f"Kamu yakin ingin {label}? Jawab 'ya, {nonce}' untuk konfirmasi.",
         needs_confirmation=True,
         pending_action=action,
         pending_argv=argv,
         kind=ToolKind.DESTRUCTIVE,
+        nonce=nonce,
     )
 
 def execute_confirmed_action(argv: list[str], action: str) -> ToolResponse:
