@@ -16,6 +16,9 @@ class SileroVAD:
         self._max_record_ms = settings.VAD_MAX_RECORD_MS
         self._no_speech_grace_ms = settings.VAD_NO_SPEECH_GRACE_MS
         self._start_ignore_ms = settings.VAD_START_IGNORE_MS
+        # Without the model there is no silence detection, so a shorter cap keeps
+        # a broken VAD from stalling every command for VAD_MAX_RECORD_MS.
+        self._fallback_max_record_ms = settings.VAD_FALLBACK_MAX_RECORD_MS
         self._last_speech_time = 0.0
         self._start_time = 0.0
         self._has_speech_started = False
@@ -90,8 +93,14 @@ class SileroVAD:
             return False
 
         if self._model is None:
-            # VAD model unavailable: cannot endpoint on silence, but the max-duration
-            # guard above still terminates the recording instead of hanging forever.
+            # VAD model unavailable: cannot endpoint on silence. Cap the recording
+            # far lower than VAD_MAX_RECORD_MS so the user is not stuck waiting.
+            if elapsed_ms > min(self._max_record_ms, self._fallback_max_record_ms):
+                log.warning(
+                    "vad_fallback_duration_reached",
+                    max_ms=min(self._max_record_ms, self._fallback_max_record_ms),
+                )
+                return True
             return False
 
         # Silero needs exactly `_chunk_size` samples per call; sounddevice frames

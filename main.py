@@ -21,7 +21,7 @@ from agent.tools import (
 )
 from audio.recorder import AudioRecorder, find_device_index, save_debug_audio
 from audio.stt import get_stt
-from audio.tts import speak
+from audio.tts import request_stop as tts_request_stop, reset_stop as tts_reset_stop, speak
 from audio.vad import SileroVAD
 from audio.wake_word import PorcupineWakeWord
 from core.config import settings
@@ -215,6 +215,9 @@ class ElysiaAssistant:
 
     def _process_pipeline(self, audio: np.ndarray, had_speech: bool = True):
         start_e2e = time.perf_counter()
+        # One budget for STT + LLM + tool. The LLM gets whatever STT leaves over,
+        # capped by its own LLM_TOTAL_BUDGET_MS.
+        turn_deadline_ts = time.monotonic() + settings.TURN_BUDGET_MS / 1000
         try:
             with self._pending_lock:
                 has_pending = self._pending is not None
@@ -222,7 +225,15 @@ class ElysiaAssistant:
             save_debug_audio(self._session_id, audio, suffix=suffix)
             t_stt = time.perf_counter()
             if had_speech:
-                text = self._stt.transcribe(audio) if len(audio) > 0 else ""
+                remaining_ms = max(
+                    500,
+                    int((turn_deadline_ts - time.monotonic()) * 1000),
+                )
+                text = (
+                    self._stt.transcribe(audio, timeout_ms=remaining_ms)
+                    if len(audio) > 0
+                    else ""
+                )
             else:
                 log.info("no_speech_recorded", session_id=self._session_id)
                 text = ""
@@ -243,7 +254,7 @@ class ElysiaAssistant:
             if not text:
                 self._respond_error("Maaf, Elysia tidak mendengar perintahmu.")
                 return
-            self._run_command(text, start_e2e)
+            self._run_command(text, start_e2e, deadline=turn_deadline_ts)
 
         except Exception as e:
             log.error("pipeline_error", error=str(e))
@@ -252,7 +263,12 @@ class ElysiaAssistant:
                 self._fsm.reset_to_idle("pipeline_error")
                 self._wake_word.resume()
 
-    def _run_command(self, text: str, start_e2e: float = 0.0):
+    def _run_command(
+        self,
+        text: str,
+        start_e2e: float = 0.0,
+        deadline: Optional[float] = None,
+    ):
         log.info(
             "processing_user_text",
             text_len=len(text),
@@ -260,10 +276,14 @@ class ElysiaAssistant:
             session_id=self._session_id,
         )
         log.debug("processing_user_text_raw", text=text, session_id=self._session_id)
-        deadline = turn_deadline()
+        # Respect the turn budget: a slow STT must not let the LLM start with a
+        # fresh full allowance.
+        llm_deadline = turn_deadline()
+        if deadline is not None:
+            llm_deadline = min(llm_deadline, deadline)
         t_llm = time.perf_counter()
         try:
-            response = chat(text, self._system_prompt, deadline=deadline)
+            response = chat(text, self._system_prompt, deadline=llm_deadline)
         except Exception as e:
             log.error("llm_call_failed", error=str(e), error_code="ERR_LLM_TIMEOUT")
             self._respond_error("Maaf, koneksi ke otak Elysia sedang terganggu.")
@@ -277,7 +297,7 @@ class ElysiaAssistant:
         if fn_call:
             t_tool = time.perf_counter()
             tool_res: ToolResponse = handle_function_call(
-                fn_call, source_text=text, deadline=deadline
+                fn_call, source_text=text, deadline=llm_deadline
             )
             log.info(
                 "stage_tool",
@@ -413,6 +433,9 @@ class ElysiaAssistant:
                 self._recorder.unmute()
             except Exception as e:
                 log.warning(unmute_warning, error=str(e))
+            # A stop request is scoped to one utterance; clear it so the next
+            # response can speak normally.
+            tts_reset_stop()
 
     def _listen_after_speech(
         self,
@@ -594,6 +617,8 @@ class ElysiaAssistant:
         self._shutdown_done = True
         log.info("shutdown_initiated")
         self._running = False
+        # Interrupt any in-flight TTS so shutdown never waits for full playback.
+        tts_request_stop()
 
         with self._pending_lock:
             self._pending = None

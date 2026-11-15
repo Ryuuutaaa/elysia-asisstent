@@ -1,5 +1,7 @@
 import asyncio
+import subprocess
 import tempfile
+import threading
 import time
 import numpy as np
 from typing import Optional
@@ -7,6 +9,32 @@ from core.config import settings
 from core.logger import get_logger
 
 log = get_logger("tts")
+
+# Set by request_stop() so a long playback can be interrupted (e.g. shutdown or
+# a future barge-in). Individual synth calls still complete, but playback stops.
+_stop_event = threading.Event()
+_current_player: Optional[subprocess.Popen] = None
+_player_lock = threading.Lock()
+
+
+def request_stop() -> None:
+    """Ask the current and future playback to stop as soon as possible."""
+    _stop_event.set()
+    with _player_lock:
+        player = _current_player
+    if player is not None:
+        try:
+            player.terminate()
+        except Exception as e:
+            log.warning("tts_player_terminate_failed", error=str(e))
+
+
+def reset_stop() -> None:
+    _stop_event.clear()
+
+
+def is_stopping() -> bool:
+    return _stop_event.is_set()
 
 async def _edge_tts_synthesize(text: str, voice: str) -> Optional[bytes]:
     import edge_tts
@@ -103,9 +131,37 @@ def synthesize_piper(text: str) -> Optional[bytes]:
         return None
 
 
+def _play_with_player(argv: list[str], timeout: float = 15.0) -> None:
+    """Run an external player, tracking it so request_stop() can terminate it."""
+    global _current_player
+
+    if _stop_event.is_set():
+        return
+
+    process = subprocess.Popen(
+        argv,
+        shell=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    with _player_lock:
+        _current_player = process
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log.warning("tts_player_timeout", timeout_sec=timeout)
+        process.terminate()
+    finally:
+        with _player_lock:
+            _current_player = None
+
+
 def play_audio_bytes(audio_bytes: bytes, text: str = "", is_raw_pcm: bool = False, sample_rate: int = 22050):
     import shutil
-    import subprocess
+
+    if _stop_event.is_set():
+        log.info("tts_playback_skipped", reason="stop_requested")
+        return
 
     try:
         if is_raw_pcm:
@@ -113,19 +169,21 @@ def play_audio_bytes(audio_bytes: bytes, text: str = "", is_raw_pcm: bool = Fals
 
             samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             sd.play(samples, samplerate=sample_rate, blocking=True)
+            if _stop_event.is_set():
+                sd.stop()
         else:
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=True) as f:
                 f.write(audio_bytes)
                 f.flush()
                 player = shutil.which("ffplay") or shutil.which("mpv")
                 if player and "ffplay" in player:
-                    subprocess.run([player, "-nodisp", "-autoexit", "-loglevel", "quiet", f.name], shell=False, timeout=15.0)
+                    _play_with_player([player, "-nodisp", "-autoexit", "-loglevel", "quiet", f.name])
                 elif player and "mpv" in player:
-                    subprocess.run([player, "--no-video", f.name], shell=False, timeout=15.0)
+                    _play_with_player([player, "--no-video", f.name])
                 elif shutil.which("mpv"):
-                    subprocess.run(["mpv", "--no-video", f.name], shell=False, timeout=15.0)
+                    _play_with_player(["mpv", "--no-video", f.name])
                 elif shutil.which("ffplay"):
-                    subprocess.run(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", f.name], shell=False, timeout=15.0)
+                    _play_with_player(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", f.name])
                 else:
                     log.warning("no_audio_player_found", fallback="console")
                     print(f"[Elysia] {text}" if text else f"[Elysia] (audio player missing): {f.name}")
@@ -134,6 +192,10 @@ def play_audio_bytes(audio_bytes: bytes, text: str = "", is_raw_pcm: bool = Fals
 
 def speak(text: str):
     start = time.perf_counter()
+
+    if _stop_event.is_set():
+        log.info("tts_skipped", reason="stop_requested", text_len=len(text))
+        return
 
     if settings.TTS_PROVIDER_DEFAULT == "edge":
         audio = synthesize_edge(text)
@@ -166,5 +228,5 @@ def speak(text: str):
             log.info("tts_playback_finished", provider="edge", total_tts_ms=round(latency_ms, 1))
             return
 
-    log.error("tts_all_failed", error_code="ERR_TTS_SYNTHESIS", text=text[:100])
+    log.error("tts_all_failed", error_code="ERR_TTS_SYNTHESIS", text_len=len(text))
     print(f"[Elysia] {text}")

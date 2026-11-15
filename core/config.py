@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     VAD_MAX_RECORD_MS: int = Field(default=15000, ge=5000, le=60000)
     VAD_NO_SPEECH_GRACE_MS: int = Field(default=5000, ge=1000, le=15000)
     VAD_START_IGNORE_MS: int = Field(default=500, ge=0, le=2000)
+    VAD_FALLBACK_MAX_RECORD_MS: int = Field(default=5000, ge=1000, le=60000, description="Batas rekaman saat model VAD gagal dimuat (tanpa deteksi silence)")
+    TURN_BUDGET_MS: int = Field(default=7000, ge=1000, le=60000, description="Total budget STT+LLM+tool untuk satu perintah (ms)")
     COOLDOWN_SEC: float = Field(default=2.0, ge=0.5, le=10.0)
     CONFIRMATION_TIMEOUT_SEC: float = Field(default=5.0, ge=1.0, le=30.0)
     FOLLOWUP_TIMEOUT_SEC: float = Field(default=5.0, ge=1.0, le=30.0)

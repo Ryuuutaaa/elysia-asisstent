@@ -39,6 +39,50 @@ def test_no_shell_true_in_source():
         assert "shell=True" not in content, f"Found shell=True in {path.relative_to(PROJECT_ROOT)}"
 
 
+def test_request_stop_skips_playback(monkeypatch):
+    import audio.tts as tts_mod
+
+    played = []
+    monkeypatch.setattr(tts_mod, "_play_with_player", lambda argv, timeout=15.0: played.append(argv))
+    tts_mod.reset_stop()
+    tts_mod.request_stop()
+    try:
+        tts_mod.play_audio_bytes(b"mp3", text="halo")
+    finally:
+        tts_mod.reset_stop()
+
+    assert played == []
+
+
+def test_request_stop_terminates_current_player(monkeypatch):
+    import audio.tts as tts_mod
+
+    player = MagicMock()
+    tts_mod.reset_stop()
+    monkeypatch.setattr(tts_mod, "_current_player", player)
+    try:
+        tts_mod.request_stop()
+    finally:
+        tts_mod.reset_stop()
+
+    player.terminate.assert_called_once()
+
+
+def test_speak_skips_synthesis_when_stopping(monkeypatch):
+    import audio.tts as tts_mod
+
+    synthesized = []
+    monkeypatch.setattr(tts_mod, "synthesize_edge", lambda text: synthesized.append("edge"))
+    tts_mod.reset_stop()
+    tts_mod.request_stop()
+    try:
+        tts_mod.speak("halo")
+    finally:
+        tts_mod.reset_stop()
+
+    assert synthesized == []
+
+
 def test_safe_execute_rejects_non_allowlisted(monkeypatch):
     import execution.linux as linux_mod
     spawned = []

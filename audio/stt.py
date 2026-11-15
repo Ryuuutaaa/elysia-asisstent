@@ -49,7 +49,12 @@ class STT:
             log.error("whisper_load_failed", error=str(e))
             raise e
 
-    def transcribe(self, audio: np.ndarray, language: Optional[str] = None) -> str:
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        language: Optional[str] = None,
+        timeout_ms: Optional[int] = None,
+    ) -> str:
         if self._model is None:
             log.warning("stt_model_not_loaded", error_code="ERR_STT_EMPTY")
             return ""
@@ -92,9 +97,10 @@ class STT:
                 self._run_lock.release()
 
         start = time.perf_counter()
+        effective_timeout_ms = min(timeout_ms or settings.STT_TIMEOUT_MS, settings.STT_TIMEOUT_MS)
         try:
             text, info, max_no_speech = run_with_timeout(
-                _do_transcribe, settings.STT_TIMEOUT_MS / 1000, budget="stt"
+                _do_transcribe, effective_timeout_ms / 1000, budget="stt"
             )
             latency_ms = (time.perf_counter() - start) * 1000
 
@@ -130,7 +136,7 @@ class STT:
             log.warning("stt_busy_skipped", error_code="ERR_STT_EMPTY")
             return ""
         except TimeoutError:
-            log.error("stt_timeout", error_code="ERR_STT_TIMEOUT", timeout_ms=settings.STT_TIMEOUT_MS)
+            log.error("stt_timeout", error_code="ERR_STT_TIMEOUT", timeout_ms=effective_timeout_ms)
             return ""
         except Exception as e:
             log.error("stt_failed", error=str(e))

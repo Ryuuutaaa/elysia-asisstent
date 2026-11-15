@@ -116,6 +116,58 @@ def test_vad_without_model_ends_at_max_duration():
     assert vad.process_frame(np.zeros(512, dtype=np.int16)) is True
 
 
+def test_vad_without_model_stops_at_fallback_cap(monkeypatch):
+    import time as _time
+    from core.config import settings
+    from audio.vad import SileroVAD
+
+    monkeypatch.setattr(settings, "VAD_FALLBACK_MAX_RECORD_MS", 3000)
+    vad = SileroVAD()
+    vad._model = None
+    vad.reset(max_record_ms=15000, no_speech_grace_ms=15000)
+
+    vad._start_time = _time.perf_counter() - 2.0
+    assert vad.process_frame(np.zeros(512, dtype=np.int16)) is False
+
+    vad._start_time = _time.perf_counter() - 3.5
+    assert vad.process_frame(np.zeros(512, dtype=np.int16)) is True
+
+
+def test_vad_fallback_respects_lower_explicit_max_record():
+    import time as _time
+    from audio.vad import SileroVAD
+
+    vad = SileroVAD()
+    vad._model = None
+    vad.reset(max_record_ms=2000, no_speech_grace_ms=2000)
+
+    vad._start_time = _time.perf_counter() - 2.5
+    assert vad.process_frame(np.zeros(512, dtype=np.int16)) is True
+
+
+def test_stt_transcribe_respects_short_timeout(monkeypatch, synthetic_speech):
+    from audio.stt import STT
+    from core.config import settings
+
+    captured = {}
+
+    def fake_run(fn, timeout, budget="llm"):
+        captured["timeout"] = timeout
+        captured["budget"] = budget
+        raise TimeoutError("slow")
+
+    monkeypatch.setattr("audio.stt.run_with_timeout", fake_run)
+    stt = STT()
+    stt._model = MagicMock()
+
+    assert stt.transcribe(synthetic_speech, timeout_ms=400) == ""
+    assert captured["timeout"] == 0.4
+    assert captured["budget"] == "stt"
+
+    stt.transcribe(synthetic_speech, timeout_ms=settings.STT_TIMEOUT_MS * 10)
+    assert captured["timeout"] == settings.STT_TIMEOUT_MS / 1000
+
+
 def test_no_speech_grace_allows_time_to_start_speaking():
     import time as _time
     from core.config import settings
